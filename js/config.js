@@ -7,7 +7,7 @@
    доступ до даних обмежують політики RLS у базі, а не цей ключ.
    ===================================================================== */
 
-const SUPABASE_URL      = "https://awluohjabxolywbtluxv.supabase.co";
+const SUPABASE_URL      = "https://awluohjabxolywbtluxv.supabase.co/";
 const SUPABASE_ANON_KEY = "sb_publishable_MdiAku6V8Z2imOYXSKvl4w_usrxRK8B";
 
 /* Домен, що дописується до логіна. Змінювати не потрібно. */
