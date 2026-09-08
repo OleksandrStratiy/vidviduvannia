@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Відвідування дітей — Шаргородська громада</title>
+<meta name="description" content="Облік відвідування дітей у закладах дошкільної освіти Шаргородської територіальної громади">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ================= ВХІД ================= -->
+<section id="login" class="hidden">
+  <div class="login-box">
+    <h1>Відвідування дітей</h1>
+    <p class="sub">Шаргородська територіальна громада</p>
+    <form id="loginForm" autocomplete="on">
+      <div class="field">
+        <label for="lg">Логін</label>
+        <input id="lg" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+      </div>
+      <div class="field">
+        <label for="pw">Пароль</label>
+        <input id="pw" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <p class="err hidden" id="loginErr"></p>
+      <button class="btn-main" type="submit" id="loginBtn">Увійти</button>
+    </form>
+    <p class="credit-small">
+      Автор системи — <b>Стратій Олександр Григорович</b><br>Слободо-Шаргородський ліцей
+    </p>
+  </div>
+</section>
+
+<!-- ================= ЗАСТОСУНОК ================= -->
+<div id="app" class="hidden">
+  <header class="top">
+    <div class="top-in">
+      <div class="brandmark">ЗДО</div>
+      <div class="who"><b id="whoName"></b><span id="whoRole"></span></div>
+      <select class="yearsel" id="yearSel"></select>
+      <button class="btn" id="logoutBtn">Вийти</button>
+    </div>
+    <div class="tabs" id="tabs"></div>
+  </header>
+
+  <main id="view"><div class="loading">Завантаження…</div></main>
+
+  <footer class="credit">
+    Автор системи — <b>Стратій Олександр Григорович</b>, Слободо-Шаргородський ліцей<br>
+    Шаргородська територіальна громада
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+<div id="layer"></div>
+<div class="boot" id="boot">Завантаження…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,164 @@
+/* ===== Облік відвідування дітей у ЗДО — стилі ===== */
+:root{
+  --ink:#17322c; --ink-soft:#6b7f7a; --paper:#f4f6f4; --card:#fff;
+  --line:#dfe4e0; --line-soft:#eef1ee; --brand:#1c6b52; --brand-soft:#e6f1eb;
+  --absent:#b8382a; --absent-bg:#fbe7e4;
+  --sick:#a06a0c;   --sick-bg:#fbf1dc;
+  --away:#2a5d94;   --away-bg:#e5edf7;
+  --gone:#7b8280;   --gone-bg:#eceeed;
+  --r:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:Manrope,"Segoe UI",system-ui,sans-serif;font-size:15px;line-height:1.4;-webkit-text-size-adjust:100%}
+button,input,select{font-family:inherit;font-size:inherit;color:inherit}
+button{cursor:pointer}
+.hidden{display:none!important}
+.loading{padding:40px 0;text-align:center;color:var(--ink-soft);font-size:14px}
+.boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--paper);color:var(--ink-soft);font-size:14px;z-index:90}
+
+/* ---------- Вхід ---------- */
+#login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.login-box{width:100%;max-width:370px}
+.login-box h1{font-size:25px;margin:0 0 4px;font-weight:800;letter-spacing:-.02em}
+.login-box .sub{margin:0 0 24px;color:var(--ink-soft);font-size:14px}
+.field{margin-bottom:11px}
+.field label{display:block;font-size:12.5px;color:var(--ink-soft);margin-bottom:4px}
+.field input{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+input:focus,select:focus{outline:2px solid var(--brand);outline-offset:1px;border-color:transparent}
+.err{background:var(--absent-bg);color:var(--absent);font-size:13px;font-weight:600;padding:9px 12px;border-radius:10px;margin:0 0 10px}
+.credit-small{margin-top:22px;font-size:11.5px;color:var(--ink-soft);text-align:center;line-height:1.7}
+.credit-small b{color:var(--ink)}
+
+.btn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 13px;font-weight:600;font-size:14px}
+.btn:disabled{opacity:.5;cursor:default}
+.btn-main{width:100%;padding:13px;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:700}
+.btn-main:disabled{opacity:.6}
+
+/* ---------- Шапка ---------- */
+header.top{position:sticky;top:0;z-index:30;background:var(--card);border-bottom:1px solid var(--line)}
+.top-in{max-width:1040px;margin:0 auto;padding:9px 14px;display:flex;align-items:center;gap:10px}
+.brandmark{width:30px;height:30px;border-radius:8px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:none}
+.who{flex:1;min-width:0}
+.who b{display:block;font-size:14.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who span{font-size:11.5px;color:var(--ink-soft)}
+.yearsel{border:1px solid var(--line);border-radius:9px;background:var(--paper);padding:7px 9px;font-size:12.5px;font-weight:700;max-width:128px}
+.tabs{max-width:1040px;margin:0 auto;padding:0 14px 9px;display:flex;gap:4px;overflow-x:auto}
+.tabs button{flex:1;min-width:82px;border:1px solid var(--line);background:var(--paper);border-radius:9px;padding:8px 6px;font-size:13px;font-weight:700;color:var(--ink-soft);white-space:nowrap}
+.tabs button.on{background:var(--brand);border-color:var(--brand);color:#fff}
+main{max-width:1040px;margin:0 auto;padding:14px 14px 20px;min-height:50vh}
+footer.credit{max-width:1040px;margin:0 auto;padding:16px 14px 30px;font-size:11.5px;color:var(--ink-soft);text-align:center;line-height:1.7}
+footer.credit b{font-weight:700;color:var(--ink)}
+
+h2.title{font-size:19px;font-weight:800;margin:0 0 2px;letter-spacing:-.01em}
+p.note{margin:0 0 12px;color:var(--ink-soft);font-size:12.5px}
+.viewonly{display:inline-block;font-size:11px;font-weight:700;color:var(--away);background:var(--away-bg);padding:3px 9px;border-radius:999px;margin-bottom:10px}
+
+.datebar{display:flex;align-items:center;gap:7px;margin-bottom:11px}
+.datebar input[type=date]{flex:1;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14.5px;min-width:0}
+.instsel{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;margin-bottom:11px;font-weight:600}
+.summary{display:flex;gap:7px;margin-bottom:12px}
+.sum{flex:1;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px 6px;text-align:center}
+.sum b{display:block;font-size:19px;font-weight:800;line-height:1.15}
+.sum span{font-size:10.5px;color:var(--ink-soft)}
+.sum.ok b{color:var(--brand)} .sum.no b{color:var(--absent)}
+
+/* ---------- Сьогодні ---------- */
+.grouprow{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--ink-soft);background:var(--paper);padding:9px 4px 5px;position:sticky;top:96px;z-index:5}
+.list{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.prow{display:flex;align-items:center;gap:8px;padding:0 9px;height:42px;border-bottom:1px solid var(--line-soft)}
+.prow:last-child{border-bottom:0}
+.prow .num{width:26px;flex:none;font-size:12px;color:var(--ink-soft);text-align:right}
+.prow .nm{flex:1;min-width:0;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow .dot{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
+.prow.m .dot{background:transparent}
+.prow.N{background:var(--absent-bg)} .prow.H{background:var(--sick-bg)} .prow.K{background:var(--away-bg)}
+.prow.V{background:var(--gone-bg)} .prow.V .nm{color:var(--gone);text-decoration:line-through}
+.marks{display:flex;gap:4px;flex:none}
+.mark{border:1px solid var(--line);background:var(--card);border-radius:8px;width:40px;height:30px;font-size:12.5px;font-weight:700;color:var(--ink-soft);display:flex;align-items:center;justify-content:center;padding:0}
+.mark[aria-pressed="true"][data-s="N"]{background:var(--absent);border-color:var(--absent);color:#fff}
+.mark[aria-pressed="true"][data-s="H"]{background:var(--sick);border-color:var(--sick);color:#fff}
+.mark[aria-pressed="true"][data-s="K"]{background:var(--away);border-color:var(--away);color:#fff}
+.mark:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.confirm-box{margin-top:14px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.confirm-box .txt{flex:1;min-width:180px;font-size:13px;color:var(--ink-soft)}
+.confirm-box button{border:0;background:var(--brand);color:#fff;font-weight:700;border-radius:10px;padding:11px 16px}
+.confirm-box.done{background:var(--brand-soft);border-color:var(--brand)}
+.confirm-box.done .txt{color:var(--brand);font-weight:700}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--ink);color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90vw;text-align:center}
+.toast.on{opacity:1}
+.toast.bad{background:var(--absent)}
+
+/* ---------- Таблиці ---------- */
+.scroll{overflow:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--card);max-height:74vh;-webkit-overflow-scrolling:touch}
+table{border-collapse:separate;border-spacing:0;font-size:12.5px;width:100%}
+th,td{border-bottom:1px solid var(--line-soft);border-right:1px solid var(--line-soft);padding:0 6px;height:32px;text-align:center;white-space:nowrap}
+th{font-weight:700;font-size:11px;color:var(--ink-soft);position:sticky;top:0;background:var(--card);z-index:4;box-shadow:0 1px 0 var(--line)}
+th.sortable{cursor:pointer}
+th.sortable.act{color:var(--brand)}
+td.name,th.name{text-align:left;position:sticky;background:var(--card);font-weight:600}
+td.num,th.num{position:sticky;left:0;width:32px;min-width:32px;background:var(--card);color:var(--ink-soft);font-size:11px;z-index:3}
+th.num{z-index:6}
+td.name{left:32px;min-width:172px;z-index:3}
+th.name{left:32px;z-index:6}
+td.cell{cursor:pointer;font-weight:700;font-size:11.5px;user-select:none;min-width:30px}
+td.cell.ro{cursor:default}
+td.cell.N{color:#fff;background:var(--absent)} td.cell.H{color:#fff;background:var(--sick)}
+td.cell.K{color:#fff;background:var(--away)} td.cell.V{color:var(--gone);background:var(--gone-bg)}
+tr.total td{font-weight:800;background:var(--paper);position:sticky;bottom:0}
+tr.total td.num,tr.total td.name{background:var(--paper);z-index:3}
+tr.clickable{cursor:pointer}
+
+table.edit td{padding:0;height:34px}
+table.edit input,table.edit select{width:100%;height:34px;border:0;background:transparent;padding:0 7px;font-size:12.5px;border-radius:0}
+table.edit input:focus,table.edit select:focus{outline:2px solid var(--brand);outline-offset:-2px;background:var(--card)}
+table.edit td.name input{font-weight:600}
+tr.addrow td{height:38px;background:var(--paper)}
+tr.addrow button{width:100%;border:0;background:transparent;color:var(--brand);font-weight:700;font-size:12.5px;text-align:left;padding:0 7px;height:38px}
+.mini{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:3px 7px;font-size:11px;font-weight:700;color:var(--ink-soft)}
+
+.toolbar{display:flex;gap:7px;margin-bottom:11px;flex-wrap:wrap}
+.toolbar input,.toolbar select{padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;min-width:0}
+.toolbar input{flex:1}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:9px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.kv:last-child{border-bottom:0}
+.kv span{color:var(--ink-soft)} .kv b{font-weight:700}
+.card h3{margin:0 0 6px;font-size:13px;font-weight:800}
+.legend{font-size:11.5px;color:var(--ink-soft);margin:11px 0 0;line-height:2}
+.legend i{font-style:normal;font-weight:700;padding:2px 7px;border-radius:6px;margin-right:3px;color:#fff}
+.legend i.N{background:var(--absent)} .legend i.H{background:var(--sick)}
+.legend i.K{background:var(--away)} .legend i.V{background:var(--gone-bg);color:var(--gone)}
+.badge-ok{font-size:10.5px;font-weight:700;color:var(--brand);background:var(--brand-soft);padding:2px 7px;border-radius:999px}
+.badge-wait{font-size:10.5px;font-weight:700;color:var(--sick);background:var(--sick-bg);padding:2px 7px;border-radius:999px}
+.pct.low{color:var(--absent);font-weight:800}
+
+/* ---------- Спливаюче меню позначки ---------- */
+.popmenu{position:fixed;z-index:70;background:var(--card);border:1px solid var(--line);border-radius:11px;box-shadow:0 10px 28px rgba(20,40,35,.18);padding:5px;min-width:178px}
+.popmenu .ph{font-size:11px;color:var(--ink-soft);padding:5px 9px 6px;border-bottom:1px solid var(--line-soft);margin-bottom:4px;white-space:normal}
+.popmenu button{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;padding:9px;border-radius:8px;font-size:13.5px;font-weight:600;text-align:left}
+.popmenu button:hover{background:var(--paper)}
+.popmenu button b{width:34px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11.5px;color:#fff;flex:none}
+.popmenu button b.P{background:var(--brand)} .popmenu button b.N{background:var(--absent)}
+.popmenu button b.H{background:var(--sick)} .popmenu button b.K{background:var(--away)}
+.backdrop{position:fixed;inset:0;z-index:65}
+
+/* ---------- Модальні вікна ---------- */
+.modal{position:fixed;inset:0;z-index:80;background:rgba(20,35,30,.35);display:flex;align-items:center;justify-content:center;padding:20px}
+.modal .box{background:var(--card);border-radius:16px;padding:18px;width:100%;max-width:340px;max-height:90vh;overflow:auto}
+.modal h3{margin:0 0 12px;font-size:17px;font-weight:800}
+
+@media(max-width:430px){
+  .grouprow{top:92px}
+  .prow{height:40px;gap:6px;padding:0 7px}
+  .mark{width:36px;height:28px}
+  .toolbar input{flex:1 1 100%}
+  .yearsel{max-width:96px;padding:7px 5px}
+}
+@media print{
+  header.top,.tabs,.toolbar,.datebar,.btn,.btn-main,footer.credit{display:none!important}
+  .scroll{max-height:none;border:0}
+  body{background:#fff}
+}
