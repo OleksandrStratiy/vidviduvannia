@@ -18,7 +18,7 @@ const MARK_FULL = {P:"Присутній", N:"Відсутній", H:"Хворі
 /* ---------- Стан ---------- */
 const S = {
   profile:null, institutions:[], years:[], yearId:null,
-  instId:null, children:[], marks:{}, holidays:new Set(), confirmed:false,
+  instId:null, children:[], marks:{}, holidays:new Set(),
   tab:"today", curDate:todayISO(), vy:null, vm:null,
   search:"", groupFilter:"", sortKey:"group", sortDir:1,
   community:null, summary:null, busy:false, keepScroll:false, highlight:null
@@ -162,7 +162,6 @@ async function reload(){
     } else {
       await loadChildren();
       await loadMonth();
-      if(S.tab === "today") await loadConfirmation();
     }
   }catch(e){ fail(e) }
   S.busy = false; render();
@@ -183,12 +182,6 @@ async function loadMonth(){
   if(error) throw error;
   S.marks = {};
   (data || []).forEach(r => S.marks[r.child_id + "|" + r.day] = r.mark);
-}
-
-async function loadConfirmation(){
-  const { data } = await sb.from("day_confirmations").select("day")
-    .eq("institution_id", S.instId).eq("day", S.curDate).maybeSingle();
-  S.confirmed = !!data;
 }
 
 /* =====================================================================
@@ -215,22 +208,11 @@ async function setMark(childId, day, mark){
         .upsert({ child_id: childId, day, mark }, { onConflict: "child_id,day" });
       if(error) throw error;
     }
-    S.confirmed = false;
     toast("Збережено");
   }catch(e){
     if(prev) S.marks[key] = prev; else delete S.marks[key];
     rerender(); fail(e);
   }
-}
-
-async function confirmDay(){
-  try{
-    const { error } = await sb.from("day_confirmations")
-      .upsert({ institution_id: S.instId, day: S.curDate, confirmed_at: new Date().toISOString() },
-              { onConflict: "institution_id,day" });
-    if(error) throw error;
-    S.confirmed = true; rerender(); toast("День підтверджено");
-  }catch(e){ fail(e) }
 }
 
 /* =====================================================================
@@ -588,13 +570,6 @@ function viewToday(){
                aria-label="${esc(c.full_name)}: ${MARK_FULL[k]}"
                ${ro()?"disabled":`onclick="tapMark(${c.id},'${k}')"`}>${MARK[k]}</button>`).join("")}</span>
         </div>`}).join("")}</div>`}).join("")}
-  ${ro() || list.length===0 || holiday ? "" : `
-  <div class="confirm-box ${S.confirmed?"done":""}">
-    <div class="txt">${S.confirmed
-      ? "День підтверджено — відділ освіти бачить ваші дані."
-      : "Коли всі позначки на місці, підтвердіть день — так відділ освіти бачить, що дані подано."}</div>
-    ${S.confirmed ? "" : `<button onclick="confirmDay()">Підтвердити день</button>`}
-  </div>`}
   <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp;
      <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув — ставиться датою вибуття на вкладці «Діти»</p>`;
 }
@@ -608,7 +583,7 @@ function setDate(v){
   const d = new Date(v);
   const sameMonth = d.getFullYear() === S.vy && d.getMonth() === S.vm;
   S.vy = d.getFullYear(); S.vm = d.getMonth();
-  sameMonth ? (loadConfirmation().then(rerender), rerender()) : reload();
+  sameMonth ? rerender() : reload();
 }
 function shiftDay(n){ const d = new Date(S.curDate); d.setDate(d.getDate()+n); setDate(iso(d)) }
 
@@ -797,9 +772,9 @@ function viewReport(){
 function viewCommunity(){
   const rows = S.community || [];
   const total = rows.reduce((s,r) => s + Number(r.kids), 0);
-  const sent = rows.filter(r => r.confirmed);
-  const avg = sent.length
-    ? Math.round(sent.reduce((s,r) => s + (r.kids ? r.present/r.kids*100 : 0), 0) / sent.length) : 0;
+  const present = rows.reduce((s,r) => s + Number(r.present), 0);
+  const avg = total ? Math.round(present / total * 100) : 0;
+  const holiday = !isWork(S.curDate);
   return `
   <div class="datebar">
     <button class="btn" onclick="shiftDay(-1)">‹</button>
@@ -807,22 +782,28 @@ function viewCommunity(){
     <button class="btn" onclick="setDateReload('${todayISO()}')">Сьогодні</button>
   </div>
   <h2 class="title">${fmtLong(S.curDate)}</h2>
-  <p class="note">Зведення по всіх закладах громади. Натисніть на заклад, щоб відкрити його сітку за місяць.</p>
+  <p class="note">${holiday
+    ? "Неробочий день — відвідування не рахується."
+    : "Загальна картина по громаді. Натисніть на заклад, щоб відкрити його сітку за місяць."}</p>
   <div class="summary">
     <div class="sum"><b>${total}</b><span>дітей у громаді</span></div>
-    <div class="sum ok"><b>${avg}%</b><span>середнє відвідування</span></div>
-    <div class="sum no"><b>${rows.length - sent.length}</b><span>не подали</span></div>
+    <div class="sum ok"><b>${present}</b><span>присутні</span></div>
+    <div class="sum no"><b>${total - present}</b><span>відсутні</span></div>
+    <div class="sum"><b>${avg}%</b><span>відвідування</span></div>
   </div>
   <div class="scroll"><table>
-    <thead><tr><th class="num">№</th><th class="name">Заклад</th><th>Дітей</th><th>Присутні</th><th>%</th><th>Стан</th></tr></thead>
+    <thead><tr><th class="num">№</th><th class="name">Заклад</th>
+      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th></tr></thead>
     <tbody>${rows.map((r,i) => {
       const pct = r.kids ? Math.round(r.present / r.kids * 100) : 0;
       return `<tr class="clickable" onclick="openInst(${r.institution_id})">
-        <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td><td>${r.kids}</td>
-        <td>${r.confirmed ? r.present : "—"}</td>
-        <td class="pct ${pct<70?"low":""}">${r.confirmed ? pct+"%" : "—"}</td>
-        <td>${r.confirmed ? `<span class="badge-ok">подано</span>` : `<span class="badge-wait">очікуємо</span>`}</td>
-      </tr>`}).join("")}</tbody></table></div>`;
+        <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td>
+        <td>${r.kids}</td><td>${r.present}</td><td>${r.kids - r.present}</td>
+        <td class="pct ${pct<70?"low":""}">${r.kids ? pct+"%" : "—"}</td>
+      </tr>`}).join("")}
+      <tr class="total"><td class="num"></td><td class="name">Разом по громаді</td>
+        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td></tr>
+    </tbody></table></div>`;
 }
 function setDateReload(v){ if(!v) return; S.curDate = v; const d = new Date(v); S.vy = d.getFullYear(); S.vm = d.getMonth(); reload() }
 function openInst(id){ S.instId = id; S.tab = "month"; renderTabs(); window.scrollTo(0,0); reload() }
