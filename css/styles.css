@@ -61,7 +61,8 @@ p.note{margin:0 0 12px;color:var(--ink-soft);font-size:12.5px}
 .datebar{display:flex;align-items:center;gap:7px;margin-bottom:11px}
 .datebar input[type=date]{flex:1;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14.5px;min-width:0}
 .instsel{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;margin-bottom:11px;font-weight:600}
-.summary{display:flex;gap:7px;margin-bottom:12px}
+.summary{display:flex;gap:7px;margin-bottom:12px;flex-wrap:wrap}
+.summary .sum{min-width:70px}
 .sum{flex:1;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px 6px;text-align:center}
 .sum b{display:block;font-size:19px;font-weight:800;line-height:1.15}
 .sum span{font-size:10.5px;color:var(--ink-soft)}
@@ -84,11 +85,6 @@ p.note{margin:0 0 12px;color:var(--ink-soft);font-size:12.5px}
 .mark[aria-pressed="true"][data-s="H"]{background:var(--sick);border-color:var(--sick);color:#fff}
 .mark[aria-pressed="true"][data-s="K"]{background:var(--away);border-color:var(--away);color:#fff}
 .mark:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
-.confirm-box{margin-top:14px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.confirm-box .txt{flex:1;min-width:180px;font-size:13px;color:var(--ink-soft)}
-.confirm-box button{border:0;background:var(--brand);color:#fff;font-weight:700;border-radius:10px;padding:11px 16px}
-.confirm-box.done{background:var(--brand-soft);border-color:var(--brand)}
-.confirm-box.done .txt{color:var(--brand);font-weight:700}
 
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;background:var(--ink);color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90vw;text-align:center}
 .toast.on{opacity:1}
@@ -157,8 +153,6 @@ tr.fresh td.num,tr.fresh td.name{background:var(--brand-soft)}
 .legend i{font-style:normal;font-weight:700;padding:2px 7px;border-radius:6px;margin-right:3px;color:#fff}
 .legend i.N{background:var(--absent)} .legend i.H{background:var(--sick)}
 .legend i.K{background:var(--away)} .legend i.V{background:var(--gone-bg);color:var(--gone)}
-.badge-ok{font-size:10.5px;font-weight:700;color:var(--brand);background:var(--brand-soft);padding:2px 7px;border-radius:999px}
-.badge-wait{font-size:10.5px;font-weight:700;color:var(--sick);background:var(--sick-bg);padding:2px 7px;border-radius:999px}
 .pct.low{color:var(--absent);font-weight:800}
 
 /* ---------- Спливаюче меню позначки ---------- */
