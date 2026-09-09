@@ -106,24 +106,20 @@ async function start(){
     const { data:{ user } } = await sb.auth.getUser();
     if(!user){ showLogin(); return }
 
-    const [prof, inst, years, hol] = await Promise.all([
+    const [prof, inst, hol] = await Promise.all([
       sb.from("profiles").select("*").eq("id", user.id).single(),
       sb.from("institutions").select("*").order("id"),
-      sb.from("school_years").select("*").order("starts_on"),
       sb.from("non_working_days").select("day,title")
     ]);
     if(prof.error) throw prof.error;
 
     S.profile = prof.data;
     S.institutions = inst.data || [];
-    S.years = years.data || [];
     S.holidays = new Set((hol.data || []).map(r => r.day));
     S.holidayTitles = {}; (hol.data || []).forEach(r => S.holidayTitles[r.day] = r.title || "");
 
-    const cur = S.years.find(y => y.is_current) || S.years[S.years.length-1];
-    S.yearId = cur ? cur.id : null;
-
     S.instId = S.profile.institution_id || (S.institutions[0] && S.institutions[0].id);
+    await loadYears();
     const d = new Date(S.curDate);
     S.vy = d.getFullYear(); S.vm = d.getMonth();
     S.tab = isAdmin() ? "community" : "today";
@@ -165,11 +161,24 @@ async function reload(){
       if(error) throw error;
       S.summary = data || [];
     } else {
+      if(!S.years.length || S.years[0].institution_id !== S.instId){ S.yearId = null; await loadYears() }
       await loadChildren();
       await loadMonth();
     }
   }catch(e){ fail(e) }
   S.busy = false; render();
+}
+
+/* Роки належать конкретному закладу — кожен садочок веде свої */
+async function loadYears(){
+  const { data, error } = await sb.from("school_years").select("*")
+    .eq("institution_id", S.instId).order("starts_on");
+  if(error) throw error;
+  S.years = data || [];
+  const keep = S.years.find(y => y.id === S.yearId);
+  const cur  = keep || S.years.find(y => y.is_current) || S.years[S.years.length-1];
+  S.yearId = cur ? cur.id : null;
+  renderYears();
 }
 
 async function loadChildren(){
@@ -451,7 +460,7 @@ async function runImport(){
 function renderYears(){
   el("yearSel").innerHTML =
     S.years.map(y => `<option value="${y.id}" ${y.id===S.yearId?"selected":""}>${esc(y.name)} н.р.</option>`).join("")
-    + (isAdmin() ? `<option value="__new">+ Новий рік…</option>` : "");
+    + (ro() ? "" : `<option value="__new">+ Новий рік…</option>`);
 }
 function closeLayer(){ el("layer").innerHTML = "" }
 
@@ -461,12 +470,12 @@ function closeLayer(){ el("layer").innerHTML = "" }
 function renderTabs(){
   const items = isAdmin()
     ? [["community","Громада"],["month","Місяць"],["kids","Діти"],["report","Звіт закладу"],["summary","Звіт громади"],["settings","Роки і свята"]]
-    : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"]];
+    : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"],["settings","Роки"]];
   el("tabs").innerHTML = items.map(([k,l]) =>
     `<button class="${S.tab===k?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
 }
 function go(k){ S.tab = k; renderTabs(); window.scrollTo(0,0); reload() }
-function pickInst(id){ S.instId = +id; reload() }
+function pickInst(id){ S.instId = +id; S.yearId = null; S.years = []; reload() }
 
 function render(){
   const old = document.querySelector(".scroll");
@@ -836,39 +845,44 @@ function viewSummary(){
 function viewSettings(){
   const y = curYear();
   const hol = [...S.holidays].filter(d => !y || (d >= y.starts_on && d <= y.ends_on)).sort();
-  return `
-  <h2 class="title">Налаштування</h2>
-  <p class="note">Навчальні роки та неробочі дні спільні для всіх закладів громади.</p>
+  return `${instPicker()}
+  <h2 class="title">Навчальні роки</h2>
+  <p class="note">${ro()
+    ? "Роки веде кожен заклад самостійно. Відділ освіти їх лише переглядає."
+    : "Ваш заклад веде власні навчальні роки — на інші садочки вони не впливають."}</p>
 
   <div class="card">
-    <h3>Навчальні роки</h3>
-    ${S.years.map(yy => `
+    <h3>Роки закладу</h3>
+    ${S.years.length ? S.years.map(yy => `
       <div class="setrow">
         <div class="setinfo">
           <b>${esc(yy.name)}</b>${yy.is_current ? ` <span class="tagcur">поточний</span>` : ""}
           <small>${fmtShort(yy.starts_on)} — ${fmtShort(yy.ends_on)}</small>
         </div>
-        <button class="mini" onclick="yearDialog(${yy.id})">✎</button>
-      </div>`).join("")}
-    <button class="btn btn-accent" style="width:100%;margin-top:10px" onclick="yearDialog(null)">+ Створити навчальний рік</button>
+        ${ro() ? "" : `<button class="mini" title="Редагувати" onclick="yearDialog(${yy.id})">✎</button>`}
+      </div>`).join("") : `<p class="hint">Жодного року ще не створено.</p>`}
+    ${ro() ? "" : `<button class="btn btn-accent" style="width:100%;margin-top:10px"
+      onclick="yearDialog(null)">+ Створити навчальний рік</button>`}
     <p class="hint" style="margin-bottom:0">Списки дітей переносяться самі: дитина без дати вибуття
-      з'являється в новому році, а та, що вибула торік, у новий рік уже не потрапляє.</p>
+      з'являється в новому році, а та, що вибула торік, у новий рік уже не потрапляє —
+      але в старому році лишається разом з усією історією відвідування.
+      Перемикати роки можна тут або списком у шапці.</p>
   </div>
 
   <div class="card">
     <h3>Неробочі дні${y ? " — " + esc(y.name) : ""}</h3>
-    <p class="hint" style="margin-top:0">Свята й канікули. Ці дні зникають із сітки місяця
-      і не враховуються у відсотку відвідування. Суботи й неділі виключаються самі.</p>
+    <p class="hint" style="margin-top:0">Свята й канікули спільні для всієї громади, їх додає відділ освіти.
+      Ці дні зникають із сітки місяця і не враховуються у відсотку. Суботи й неділі виключаються самі.</p>
     ${hol.length ? hol.map(d => `
       <div class="setrow">
         <div class="setinfo"><b>${fmtShort(d)}</b><small>${esc(S.holidayTitles[d] || "")}</small></div>
-        <button class="mini" onclick="delHoliday('${d}')">✕</button>
+        ${isAdmin() ? `<button class="mini" onclick="delHoliday('${d}')">✕</button>` : ""}
       </div>`).join("") : `<p class="hint">Поки що не додано жодного дня.</p>`}
-    <div class="toolbar" style="margin:10px 0 0">
+    ${isAdmin() ? `<div class="toolbar" style="margin:10px 0 0">
       <input id="hol_day" type="date" style="flex:0 0 150px">
       <input id="hol_title" placeholder="Назва, напр. Різдво">
       <button class="btn btn-accent" onclick="addHoliday()">Додати</button>
-    </div>
+    </div>` : ""}
   </div>`;
 }
 
@@ -878,6 +892,7 @@ function yearDialog(id){
   el("layer").innerHTML = `
   <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
     <h3>${y ? "Навчальний рік" : "Новий навчальний рік"}</h3>
+    <p class="hint" style="margin-top:0">Заклад: <b>${esc(instName(S.instId))}</b></p>
     <div class="field"><label>Назва</label>
       <input id="ny_name" value="${esc(y ? y.name : n + "/" + (n+1))}"></div>
     <div class="field"><label>Початок</label>
@@ -903,7 +918,8 @@ async function saveYear(id){
   if(!name || !starts_on || !ends_on) return toast("Заповніть усі поля", true);
   if(starts_on >= ends_on) return toast("Кінець року має бути пізніше за початок", true);
   try{
-    if(is_current) await sb.from("school_years").update({ is_current:false }).neq("id", id || 0);
+    if(is_current) await sb.from("school_years").update({ is_current:false })
+      .eq("institution_id", S.instId).neq("id", id || 0);
     let row;
     if(id){
       const { data, error } = await sb.from("school_years")
@@ -913,7 +929,7 @@ async function saveYear(id){
       S.years[S.years.findIndex(x => x.id === id)] = data;
     }else{
       const { data, error } = await sb.from("school_years")
-        .insert({ name, starts_on, ends_on, is_current }).select().single();
+        .insert({ institution_id: S.instId, name, starts_on, ends_on, is_current }).select().single();
       if(error) throw error;
       row = data; S.years.push(data);
     }
