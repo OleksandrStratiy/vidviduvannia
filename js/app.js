@@ -106,20 +106,17 @@ async function start(){
     const { data:{ user } } = await sb.auth.getUser();
     if(!user){ showLogin(); return }
 
-    const [prof, inst, hol] = await Promise.all([
+    const [prof, inst] = await Promise.all([
       sb.from("profiles").select("*").eq("id", user.id).single(),
-      sb.from("institutions").select("*").order("id"),
-      sb.from("non_working_days").select("day,title")
+      sb.from("institutions").select("*").order("id")
     ]);
     if(prof.error) throw prof.error;
 
     S.profile = prof.data;
     S.institutions = inst.data || [];
-    S.holidays = new Set((hol.data || []).map(r => r.day));
-    S.holidayTitles = {}; (hol.data || []).forEach(r => S.holidayTitles[r.day] = r.title || "");
-
     S.instId = S.profile.institution_id || (S.institutions[0] && S.institutions[0].id);
     await loadYears();
+    await loadHolidays();
     const d = new Date(S.curDate);
     S.vy = d.getFullYear(); S.vm = d.getMonth();
     S.tab = isAdmin() ? "community" : "today";
@@ -147,9 +144,7 @@ async function reload(){
   S.busy = true; render();
   try{
     if(S.tab === "settings"){
-      const { data } = await sb.from("non_working_days").select("day,title");
-      S.holidays = new Set((data || []).map(r => r.day));
-      S.holidayTitles = {}; (data || []).forEach(r => S.holidayTitles[r.day] = r.title || "");
+      await loadYears(); await loadHolidays();
     } else if(S.tab === "community"){
       const { data, error } = await sb.rpc("community_day", { p_day: S.curDate });
       if(error) throw error;
@@ -161,7 +156,9 @@ async function reload(){
       if(error) throw error;
       S.summary = data || [];
     } else {
-      if(!S.years.length || S.years[0].institution_id !== S.instId){ S.yearId = null; await loadYears() }
+      if(!S.years.length || S.years[0].institution_id !== S.instId){
+        S.yearId = null; await loadYears(); await loadHolidays();
+      }
       await loadChildren();
       await loadMonth();
     }
@@ -179,6 +176,16 @@ async function loadYears(){
   const cur  = keep || S.years.find(y => y.is_current) || S.years[S.years.length-1];
   S.yearId = cur ? cur.id : null;
   renderYears();
+}
+
+/* Неробочі дні теж належать закладу */
+async function loadHolidays(){
+  const { data, error } = await sb.from("non_working_days").select("day,title")
+    .eq("institution_id", S.instId);
+  if(error) throw error;
+  S.holidays = new Set((data || []).map(r => r.day));
+  S.holidayTitles = {};
+  (data || []).forEach(r => S.holidayTitles[r.day] = r.title || "");
 }
 
 async function loadChildren(){
@@ -469,8 +476,8 @@ function closeLayer(){ el("layer").innerHTML = "" }
    ===================================================================== */
 function renderTabs(){
   const items = isAdmin()
-    ? [["community","Громада"],["month","Місяць"],["kids","Діти"],["report","Звіт закладу"],["summary","Звіт громади"],["settings","Роки і свята"]]
-    : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"],["settings","Роки"]];
+    ? [["community","Громада"],["month","Місяць"],["kids","Діти"],["report","Звіт закладу"],["summary","Звіт громади"],["settings","Налаштування"]]
+    : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"],["settings","Налаштування"]];
   el("tabs").innerHTML = items.map(([k,l]) =>
     `<button class="${S.tab===k?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
 }
@@ -846,10 +853,10 @@ function viewSettings(){
   const y = curYear();
   const hol = [...S.holidays].filter(d => !y || (d >= y.starts_on && d <= y.ends_on)).sort();
   return `${instPicker()}
-  <h2 class="title">Навчальні роки</h2>
+  <h2 class="title">Роки і неробочі дні</h2>
   <p class="note">${ro()
-    ? "Роки веде кожен заклад самостійно. Відділ освіти їх лише переглядає."
-    : "Ваш заклад веде власні навчальні роки — на інші садочки вони не впливають."}</p>
+    ? "Кожен заклад веде це самостійно. Відділ освіти лише переглядає."
+    : "Налаштування вашого закладу — на інші садочки вони не впливають."}</p>
 
   <div class="card">
     <h3>Роки закладу</h3>
@@ -871,18 +878,18 @@ function viewSettings(){
 
   <div class="card">
     <h3>Неробочі дні${y ? " — " + esc(y.name) : ""}</h3>
-    <p class="hint" style="margin-top:0">Свята й канікули спільні для всієї громади, їх додає відділ освіти.
+    <p class="hint" style="margin-top:0">Свята, канікули та інші дні, коли заклад не працює.
       Ці дні зникають із сітки місяця і не враховуються у відсотку. Суботи й неділі виключаються самі.</p>
     ${hol.length ? hol.map(d => `
       <div class="setrow">
         <div class="setinfo"><b>${fmtShort(d)}</b><small>${esc(S.holidayTitles[d] || "")}</small></div>
-        ${isAdmin() ? `<button class="mini" onclick="delHoliday('${d}')">✕</button>` : ""}
+        ${ro() ? "" : `<button class="mini" onclick="delHoliday('${d}')">✕</button>`}
       </div>`).join("") : `<p class="hint">Поки що не додано жодного дня.</p>`}
-    ${isAdmin() ? `<div class="toolbar" style="margin:10px 0 0">
+    ${ro() ? "" : `<div class="toolbar" style="margin:10px 0 0">
       <input id="hol_day" type="date" style="flex:0 0 150px">
       <input id="hol_title" placeholder="Назва, напр. Різдво">
       <button class="btn btn-accent" onclick="addHoliday()">Додати</button>
-    </div>` : ""}
+    </div>`}
   </div>`;
 }
 
@@ -960,7 +967,7 @@ async function addHoliday(){
   if(!day) return toast("Оберіть дату", true);
   try{
     const { error } = await sb.from("non_working_days")
-      .upsert({ day, title }, { onConflict:"day" });
+      .upsert({ institution_id: S.instId, day, title }, { onConflict:"institution_id,day" });
     if(error) throw error;
     S.holidays.add(day); S.holidayTitles[day] = title;
     rerender(); toast("Додано " + fmtShort(day));
@@ -968,7 +975,8 @@ async function addHoliday(){
 }
 async function delHoliday(day){
   try{
-    const { error } = await sb.from("non_working_days").delete().eq("day", day);
+    const { error } = await sb.from("non_working_days").delete()
+      .eq("institution_id", S.instId).eq("day", day);
     if(error) throw error;
     S.holidays.delete(day); delete S.holidayTitles[day];
     rerender(); toast("Видалено");
