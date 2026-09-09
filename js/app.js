@@ -73,6 +73,14 @@ el("loginForm").addEventListener("submit", async ev => {
   await start();
 });
 
+el("pwEye").addEventListener("click", () => {
+  const p = el("pw"), b = el("pwEye"), show = p.type === "password";
+  p.type = show ? "text" : "password";
+  b.textContent = show ? "Сховати" : "Показати";
+  b.setAttribute("aria-label", show ? "Сховати пароль" : "Показати пароль");
+  p.focus();
+});
+
 el("logoutBtn").addEventListener("click", async () => {
   await sb.auth.signOut();
   location.reload();
@@ -226,75 +234,97 @@ async function confirmDay(){
 }
 
 /* =====================================================================
-   Редагування карток дітей (без перемальовування — курсор не стрибає)
+   Картка дитини — додавання і редагування в одному вікні
    ===================================================================== */
-const saveTimers = {};
-function editChild(id, field, value){
-  const c = S.children.find(x => x.id === id);
-  if(!c) return;
-  c[field] = value;
-  const key = id + "|" + field;
-  clearTimeout(saveTimers[key]);
-  saveTimers[key] = setTimeout(async () => {
-    try{
-      const payload = {};
-      payload[field] = (field === "birth_date" || field === "left_on" || field === "enrolled_on")
-        ? (value || null) : value;
-      const { error } = await sb.from("children").update(payload).eq("id", id);
-      if(error) throw error;
-      toast("Збережено");
-    }catch(e){ fail(e) }
-  }, 700);
-}
+const CHILD_FIELDS = [
+  ["full_name",      "Прізвище, ім'я, по батькові", "text",  "Шевчук Марія Іванівна"],
+  ["group_name",     "Група",                       "group", "молодша"],
+  ["birth_date",     "Дата народження",             "date",  ""],
+  ["parents",        "Батьки (опікун)",             "text",  "Шевчук О. П. / Шевчук І. В."],
+  ["address",        "Домашня адреса",              "text",  "с. Гибалівка, вул. Шкільна, 5"],
+  ["phone",          "Телефон",                     "tel",   "0971234567"],
+  ["edu_form",       "Форма здобуття освіти",       "select",FORMS],
+  ["special_status", "Спеціальний статус",          "select",STATUSES_REF],
+  ["meal_benefit",   "Пільга на харчування",        "select",["50","100"]],
+  ["enrolled_on",    "Дата зарахування",            "date",  ""],
+  ["left_on",        "Дата вибуття",                "date",  ""]
+];
 
-/* ---------- Додавання дитини: окрема форма ---------- */
-function addChildDialog(){
-  const groups = [...new Set(S.children.map(c => c.group_name).filter(Boolean))];
-  el("layer").innerHTML = `
-  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
-    <h3>Нова дитина</h3>
-    <div class="field"><label>Прізвище, ім'я, по батькові</label>
-      <input id="nc_name" autocomplete="off" placeholder="Шевчук Марія Іванівна"></div>
-    <div class="field"><label>Група</label>
-      <input id="nc_group" list="gr_dlg" autocomplete="off" value="${esc(S.groupFilter||"")}" placeholder="молодша">
-      <datalist id="gr_dlg">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist></div>
-    <div class="field"><label>Дата народження</label><input id="nc_birth" type="date"></div>
-    <div class="field"><label>Дата зарахування</label><input id="nc_enrolled" type="date" value="${todayISO()}"></div>
-    <p style="font-size:12px;color:var(--ink-soft);margin:10px 0 14px">
-      Решту — батьків, адресу, статус, пільгу — зручніше дозаповнити прямо в таблиці.</p>
-    <button class="btn-main" onclick="saveNewChild(false)">Зберегти</button>
-    <button class="btn" style="width:100%;margin-top:7px" onclick="saveNewChild(true)">Зберегти і додати ще</button>
-    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
-  </div></div>`;
-  setTimeout(() => el("nc_name").focus(), 50);
-  el("nc_name").addEventListener("keydown", e => { if(e.key === "Enter") saveNewChild(true) });
-}
-
-async function saveNewChild(again){
-  const name = el("nc_name").value.trim();
-  if(!name) return toast("Впишіть прізвище та ім'я", true);
-  try{
-    const { data, error } = await sb.from("children").insert({
-      institution_id: S.instId,
-      full_name: name,
-      group_name: el("nc_group").value.trim(),
-      birth_date: el("nc_birth").value || null,
-      enrolled_on: el("nc_enrolled").value || null,
-      edu_form: "очна"
-    }).select().single();
-    if(error) throw error;
-    S.children.push(data);
-    S.highlight = data.id;
-    toast("Додано: " + name);
-    if(again){
-      el("nc_name").value = ""; el("nc_birth").value = "";
-      el("nc_name").focus();
-      renderBehindModal();
+function childDialog(id){
+  const c = id ? S.children.find(x => x.id === id) : null;
+  const isNew = !c;
+  const val = f => c ? (c[f] ?? "") : (f === "group_name" ? (S.groupFilter || "") :
+                                       f === "enrolled_on" ? todayISO() :
+                                       f === "edu_form" ? "очна" : "");
+  const fieldHTML = ([f, label, type, extra]) => {
+    const v = esc(val(f));
+    let input;
+    if(type === "select"){
+      input = `<select id="cf_${f}">${["<option value=\"\"></option>"]
+        .concat(extra.map(o => `<option ${val(f)===o?"selected":""}>${esc(o)}</option>`)).join("")}</select>`;
+    }else if(type === "group"){
+      input = `<input id="cf_${f}" list="gr_dlg" autocomplete="off" value="${v}" placeholder="${esc(extra)}">
+               <datalist id="gr_dlg">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist>`;
+    }else if(type === "date"){
+      input = `<input id="cf_${f}" type="date" value="${v}">`;
     }else{
+      input = `<input id="cf_${f}" type="${type}" autocomplete="off" value="${v}" placeholder="${esc(extra)}">`;
+    }
+    return `<div class="field"><label for="cf_${f}">${label}</label>${input}</div>`;
+  };
+
+  el("layer").innerHTML = `
+  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box wide">
+    <h3>${isNew ? "Нова дитина" : "Картка дитини"}</h3>
+    ${CHILD_FIELDS.map(fieldHTML).join("")}
+    <p class="hint">Дата вибуття закриває дитину: з наступного дня в сітці стоїть «виб»,
+       але вся історія відвідування зберігається.</p>
+    <button class="btn-main" onclick="saveChild(${id || "null"}, false)">Зберегти</button>
+    ${isNew ? `<button class="btn" style="width:100%;margin-top:7px" onclick="saveChild(null, true)">Зберегти і додати ще</button>` : ""}
+    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
+    ${isNew ? "" : `<button class="btn btn-danger" style="width:100%;margin-top:14px" onclick="deleteChild(${id})">Видалити дитину</button>`}
+  </div></div>`;
+  setTimeout(() => el("cf_full_name").focus(), 50);
+}
+
+function readChildForm(){
+  const o = { institution_id: S.instId };
+  CHILD_FIELDS.forEach(([f,,type]) => {
+    const v = el("cf_" + f).value.trim();
+    o[f] = (type === "date") ? (v || null) : v;
+  });
+  return o;
+}
+
+async function saveChild(id, again){
+  const payload = readChildForm();
+  if(!payload.full_name) return toast("Впишіть прізвище та ім'я", true);
+  try{
+    if(id){
+      const { data, error } = await sb.from("children").update(payload).eq("id", id).select().single();
+      if(error) throw error;
+      const i = S.children.findIndex(x => x.id === id);
+      if(i >= 0) S.children[i] = data;
+      S.highlight = id;
       closeLayer(); rerender(); scrollToHighlight();
+      toast("Збережено");
+    }else{
+      const { data, error } = await sb.from("children").insert(payload).select().single();
+      if(error) throw error;
+      S.children.push(data);
+      S.highlight = data.id;
+      toast("Додано: " + data.full_name);
+      if(again){
+        ["full_name","birth_date","parents","address","phone"].forEach(f => el("cf_" + f).value = "");
+        el("cf_full_name").focus();
+        renderBehindModal();
+      }else{
+        closeLayer(); rerender(); scrollToHighlight();
+      }
     }
   }catch(e){ fail(e) }
 }
+
 function renderBehindModal(){
   const saved = el("layer").innerHTML;
   rerender();
@@ -304,7 +334,18 @@ function scrollToHighlight(){
   if(!S.highlight) return;
   const row = document.querySelector(`tr[data-child="${S.highlight}"]`);
   if(row) row.scrollIntoView({ block:"center", behavior:"smooth" });
-  setTimeout(() => { S.highlight = null; }, 2500);
+  setTimeout(() => { S.highlight = null }, 2500);
+}
+
+async function deleteChild(id){
+  const c = S.children.find(x => x.id === id);
+  if(!confirm(`Видалити «${c?.full_name || "без імені"}» разом з усім відвідуванням?\nЯкщо дитина просто пішла із садочка — краще поставити дату вибуття.`)) return;
+  try{
+    const { error } = await sb.from("children").delete().eq("id", id);
+    if(error) throw error;
+    S.children = S.children.filter(x => x.id !== id);
+    closeLayer(); rerender(); toast("Видалено");
+  }catch(e){ fail(e) }
 }
 
 /* ---------- Імпорт зі списку ---------- */
@@ -415,17 +456,6 @@ async function runImport(){
     info.textContent = "Помилка: " + (e.message || "не вдалося прочитати файл");
     info.style.color = "var(--absent)";
   }
-}
-
-async function deleteChild(id){
-  const c = S.children.find(x => x.id === id);
-  if(!confirm(`Видалити «${c.full_name || "без імені"}» разом з усім відвідуванням?\nЯкщо дитина просто пішла із садочка — краще поставити дату вибуття.`)) return;
-  try{
-    const { error } = await sb.from("children").delete().eq("id", id);
-    if(error) throw error;
-    S.children = S.children.filter(x => x.id !== id);
-    rerender(); toast("Видалено");
-  }catch(e){ fail(e) }
 }
 
 /* =====================================================================
@@ -648,21 +678,14 @@ function viewKids(){
   const groups = [...new Set(S.children.map(c => c.group_name).filter(Boolean))];
   const th = (k,l,cls="") => `<th class="${cls} sortable ${S.sortKey===k?"act":""}" onclick="sortBy('${k}')">${l}${
     S.sortKey===k ? (S.sortDir>0?" ↑":" ↓") : ""}</th>`;
-  const addRow = () => ro() ? "" :
-    `<tr class="addrow"><td class="num"></td><td class="name" colspan="12">
-       <button onclick="addChildDialog()">+ Додати дитину</button></td></tr>`;
-  const inp = (c, f, attr="") => ro()
-    ? `<td>${esc(c[f]||"")}</td>`
-    : `<td><input ${attr} value="${esc(c[f]||"")}" oninput="editChild(${c.id},'${f}',this.value)"></td>`;
-  const sel = (c, f, arr) => ro()
-    ? `<td>${esc(c[f]||"")}</td>`
-    : `<td><select onchange="editChild(${c.id},'${f}',this.value)"><option value=""></option>${
-        arr.map(o => `<option ${c[f]===o?"selected":""}>${esc(o)}</option>`).join("")}</select></td>`;
+  /* клітинка: обрізаний текст + повне значення у підказці при наведенні */
+  const td = (v, cls="") => `<td class="${cls}" title="${esc(v||"")}"><span class="cut">${esc(v||"")}</span></td>`;
 
   return `${instPicker()}
   <h2 class="title">Діти</h2>
   <p class="note">${all.filter(c => !c.left_on || c.left_on >= S.curDate).length} у списку ·
      ${S.children.filter(c => c.left_on).length} вибуло${ro()?" · лише перегляд":""}.
+     ${ro() ? "" : "Щоб змінити дані, натисніть олівець на початку рядка."}
      Сортування — натисніть на заголовок стовпчика.</p>
   <div class="toolbar">
     <input placeholder="Пошук за прізвищем" value="${esc(S.search)}" oninput="S.search=this.value;rerender()">
@@ -670,45 +693,50 @@ function viewKids(){
       <option value="">Усі групи</option>
       ${groups.map(g => `<option ${S.groupFilter===g?"selected":""}>${esc(g)}</option>`).join("")}
     </select>
-    ${ro() ? "" : `<button class="btn btn-accent" onclick="addChildDialog()">+ Додати дитину</button>
+    ${ro() ? "" : `<button class="btn btn-accent" onclick="childDialog(null)">+ Додати дитину</button>
     <button class="btn" onclick="importDialog()">Імпорт</button>`}
     <button class="btn" onclick="exportKids()">Excel</button>
   </div>
-  <datalist id="gr">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist>
-  <div class="scroll"><table class="edit">
+  ${list.length === 0 ? `<div class="card">${S.children.length
+      ? "За цим пошуком нікого не знайдено."
+      : "Список порожній. Додайте дітей по одній кнопкою «+ Додати дитину» або завантажте весь список кнопкою «Імпорт»."}</div>` : `
+  <div class="scroll"><table class="grid">
     <thead><tr>
       <th class="num">№</th>
+      ${ro() ? "" : `<th class="act"></th>`}
       ${th("name","Прізвище, ім'я, по батькові","name")}
-      ${th("group","Група")}
+      ${th("group","Група","w-group")}
       ${th("birth","Дата народж.")}
-      <th style="min-width:200px">Батьки (опікун)</th>
-      <th style="min-width:220px">Домашня адреса</th>
-      <th style="min-width:130px">Телефон</th>
-      <th style="min-width:170px">Форма здобуття</th>
-      <th style="min-width:250px">Спеціальний статус</th>
-      <th style="min-width:100px">Пільга</th>
-      <th style="min-width:130px">Зараховано</th>
-      <th style="min-width:130px">Дата вибуття</th>
-      <th style="min-width:52px"></th>
+      <th class="w-par">Батьки (опікун)</th>
+      <th class="w-adr">Домашня адреса</th>
+      <th class="w-tel">Телефон</th>
+      <th class="w-form">Форма здобуття</th>
+      <th class="w-st">Спеціальний статус</th>
+      <th>Пільга</th>
+      <th>Зараховано</th>
+      <th>Вибуття</th>
     </tr></thead>
     <tbody>
-      ${addRow()}
-      ${list.map((c,i) => `<tr data-child="${c.id}" class="${S.highlight===c.id?"fresh":""}">
+      ${list.map((c,i) => `<tr data-child="${c.id}" class="${S.highlight===c.id?"fresh":""} ${c.left_on?"gone-row":""}">
         <td class="num">${i+1}</td>
-        ${ro() ? `<td class="name">${esc(c.full_name)}</td>`
-               : `<td class="name"><input value="${esc(c.full_name)}" oninput="editChild(${c.id},'full_name',this.value)"></td>`}
-        ${ro() ? `<td>${esc(c.group_name||"")}</td>`
-               : `<td><input list="gr" value="${esc(c.group_name||"")}" oninput="editChild(${c.id},'group_name',this.value)"></td>`}
-        ${inp(c,"birth_date",'type="date"')}
-        ${inp(c,"parents")}${inp(c,"address")}${inp(c,"phone")}
-        ${sel(c,"edu_form",FORMS)}${sel(c,"special_status",STATUSES_REF)}${sel(c,"meal_benefit",["50","100"])}
-        ${inp(c,"enrolled_on",'type="date"')}${inp(c,"left_on",'type="date"')}
-        <td>${ro()?"":`<button class="mini" onclick="deleteChild(${c.id})">✕</button>`}</td>
+        ${ro() ? "" : `<td class="act"><button class="mini" title="Редагувати" onclick="childDialog(${c.id})">✎</button></td>`}
+        ${td(c.full_name, "name")}
+        ${td(c.group_name, "w-group")}
+        <td>${c.birth_date ? fmtShort(c.birth_date) : ""}</td>
+        ${td(c.parents, "w-par")}
+        ${td(c.address, "w-adr")}
+        ${td(c.phone, "w-tel")}
+        ${td(c.edu_form, "w-form")}
+        ${td(c.special_status, "w-st")}
+        <td>${c.meal_benefit ? c.meal_benefit + "%" : ""}</td>
+        <td>${c.enrolled_on ? fmtShort(c.enrolled_on) : ""}</td>
+        <td>${c.left_on ? fmtShort(c.left_on) : ""}</td>
       </tr>`).join("")}
-      ${addRow()}
-    </tbody></table></div>
-  <p class="legend">Зміни зберігаються самі. Дата вибуття закриває дитину: з наступного дня в сітці «виб»,
-     історія відвідування зберігається.</p>`;
+      ${ro() ? "" : `<tr class="addrow"><td class="num"></td><td class="name" colspan="12">
+        <button onclick="childDialog(null)">+ Додати дитину</button></td></tr>`}
+    </tbody></table></div>`}
+  <p class="legend">Наведіть курсор на клітинку — побачите повний текст.
+     Дата вибуття закриває дитину: з наступного дня в сітці «виб», історія відвідування зберігається.</p>`;
 }
 
 /* =====================================================================
