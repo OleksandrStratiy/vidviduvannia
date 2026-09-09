@@ -21,7 +21,7 @@ const S = {
   instId:null, children:[], marks:{}, holidays:new Set(), confirmed:false,
   tab:"today", curDate:todayISO(), vy:null, vm:null,
   search:"", groupFilter:"", sortKey:"group", sortDir:1,
-  community:null, summary:null, busy:false, keepScroll:false
+  community:null, summary:null, busy:false, keepScroll:false, highlight:null
 };
 
 /* ---------- Дрібні хелпери ---------- */
@@ -247,21 +247,174 @@ function editChild(id, field, value){
   }, 700);
 }
 
-async function addChild(pos){
+/* ---------- Додавання дитини: окрема форма ---------- */
+function addChildDialog(){
+  const groups = [...new Set(S.children.map(c => c.group_name).filter(Boolean))];
+  el("layer").innerHTML = `
+  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
+    <h3>Нова дитина</h3>
+    <div class="field"><label>Прізвище, ім'я, по батькові</label>
+      <input id="nc_name" autocomplete="off" placeholder="Шевчук Марія Іванівна"></div>
+    <div class="field"><label>Група</label>
+      <input id="nc_group" list="gr_dlg" autocomplete="off" value="${esc(S.groupFilter||"")}" placeholder="молодша">
+      <datalist id="gr_dlg">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist></div>
+    <div class="field"><label>Дата народження</label><input id="nc_birth" type="date"></div>
+    <div class="field"><label>Дата зарахування</label><input id="nc_enrolled" type="date" value="${todayISO()}"></div>
+    <p style="font-size:12px;color:var(--ink-soft);margin:10px 0 14px">
+      Решту — батьків, адресу, статус, пільгу — зручніше дозаповнити прямо в таблиці.</p>
+    <button class="btn-main" onclick="saveNewChild(false)">Зберегти</button>
+    <button class="btn" style="width:100%;margin-top:7px" onclick="saveNewChild(true)">Зберегти і додати ще</button>
+    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
+  </div></div>`;
+  setTimeout(() => el("nc_name").focus(), 50);
+  el("nc_name").addEventListener("keydown", e => { if(e.key === "Enter") saveNewChild(true) });
+}
+
+async function saveNewChild(again){
+  const name = el("nc_name").value.trim();
+  if(!name) return toast("Впишіть прізвище та ім'я", true);
   try{
     const { data, error } = await sb.from("children").insert({
-      institution_id: S.instId, full_name: "", group_name: S.groupFilter || "",
-      edu_form: "очна", enrolled_on: todayISO()
+      institution_id: S.instId,
+      full_name: name,
+      group_name: el("nc_group").value.trim(),
+      birth_date: el("nc_birth").value || null,
+      enrolled_on: el("nc_enrolled").value || null,
+      edu_form: "очна"
     }).select().single();
     if(error) throw error;
     S.children.push(data);
-    S.sortKey = "manual";
-    rerender();
-    const inputs = document.querySelectorAll("table.edit td.name input");
-    const target = pos === "top" ? inputs[0] : inputs[inputs.length-1];
-    if(target){ target.focus(); target.scrollIntoView({ block:"center" }) }
-    toast("Новий рядок");
+    S.highlight = data.id;
+    toast("Додано: " + name);
+    if(again){
+      el("nc_name").value = ""; el("nc_birth").value = "";
+      el("nc_name").focus();
+      renderBehindModal();
+    }else{
+      closeLayer(); rerender(); scrollToHighlight();
+    }
   }catch(e){ fail(e) }
+}
+function renderBehindModal(){
+  const saved = el("layer").innerHTML;
+  rerender();
+  el("layer").innerHTML = saved;
+}
+function scrollToHighlight(){
+  if(!S.highlight) return;
+  const row = document.querySelector(`tr[data-child="${S.highlight}"]`);
+  if(row) row.scrollIntoView({ block:"center", behavior:"smooth" });
+  setTimeout(() => { S.highlight = null; }, 2500);
+}
+
+/* ---------- Імпорт зі списку ---------- */
+function importDialog(){
+  el("layer").innerHTML = `
+  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
+    <h3>Імпорт списку дітей</h3>
+    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 12px">
+      Файл CSV у тому самому вигляді, що дає кнопка «Excel». Найпростіше:
+      вивантажте порожній шаблон, заповніть в Excel і завантажте назад.</p>
+    <button class="btn" style="width:100%;margin-bottom:12px" onclick="downloadTemplate()">Завантажити шаблон</button>
+    <div class="field"><label>Оберіть заповнений файл (.csv)</label>
+      <input id="imp_file" type="file" accept=".csv,text/csv"></div>
+    <p id="imp_info" style="font-size:12.5px;color:var(--ink-soft);margin:8px 0 14px">
+      Діти додаються до <b>${esc(instName(S.instId))}</b>. Наявні записи не змінюються і не видаляються.</p>
+    <button class="btn-main" onclick="runImport()">Завантажити</button>
+    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
+  </div></div>`;
+}
+function downloadTemplate(){
+  download("shablon-dity.csv", [
+    ["Прізвище, ім'я, по батькові","Група","Дата народження","Батьки","Адреса","Телефон",
+     "Форма здобуття","Спеціальний статус","Пільга","Зараховано","Дата вибуття"],
+    ["Шевчук Марія Іванівна","молодша","2023-04-15","Шевчук О. П. / Шевчук І. В.",
+     "с. Гибалівка, вул. Шкільна, 5","0971234567","очна","із багатодітної родини","50","2026-09-01",""]
+  ]);
+}
+/* Розбір CSV: підтримує ; та , як роздільник, лапки, перенос рядків у полі */
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, "");
+  const head = text.slice(0, text.indexOf("\n") + 1 || text.length);
+  const delim = (head.split(";").length > head.split(",").length) ? ";" : ",";
+  const rows = []; let row = [], cell = "", q = false;
+  for(let i = 0; i < text.length; i++){
+    const ch = text[i];
+    if(q){
+      if(ch === '"'){ if(text[i+1] === '"'){ cell += '"'; i++ } else q = false }
+      else cell += ch;
+    }else{
+      if(ch === '"') q = true;
+      else if(ch === delim){ row.push(cell); cell = "" }
+      else if(ch === "\n"){ row.push(cell); rows.push(row); row = []; cell = "" }
+      else if(ch !== "\r") cell += ch;
+    }
+  }
+  if(cell !== "" || row.length){ row.push(cell); rows.push(row) }
+  return rows.filter(r => r.some(v => String(v).trim() !== ""));
+}
+function normDate(v){
+  v = String(v || "").trim();
+  if(!v) return null;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const m = v.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);   // 05.04.2023
+  if(m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+  return null;
+}
+async function runImport(){
+  const f = el("imp_file").files[0];
+  if(!f) return toast("Оберіть файл", true);
+  const info = el("imp_info");
+  info.textContent = "Читаю файл…";
+  try{
+    const rows = parseCSV(await f.text());
+    if(rows.length < 2) throw new Error("У файлі немає рядків з дітьми");
+
+    const head = rows[0].map(h => h.toLowerCase().replace(/["\s]/g, ""));
+    const find = (...keys) => head.findIndex(h => keys.some(k => h.includes(k)));
+    const col = {
+      name:   find("прізвище","піб","ім'я","имя"),
+      group:  find("група"),
+      birth:  find("народж"),
+      par:    find("батьк","опікун"),
+      adr:    find("адрес"),
+      tel:    find("телефон"),
+      form:   find("форма","здобут"),
+      st:     find("статус"),
+      ben:    find("пільг"),
+      enr:    find("зарахов"),
+      out:    find("вибут")
+    };
+    if(col.name < 0) throw new Error("Не знайдено стовпчик з прізвищем та ім'ям");
+
+    const at = (r, i) => i >= 0 ? String(r[i] ?? "").trim() : "";
+    const payload = rows.slice(1).map(r => ({
+      institution_id: S.instId,
+      full_name:  at(r, col.name),
+      group_name: at(r, col.group),
+      birth_date: normDate(at(r, col.birth)),
+      parents:    at(r, col.par),
+      address:    at(r, col.adr),
+      phone:      at(r, col.tel),
+      edu_form:   FORMS.includes(at(r, col.form).toLowerCase()) ? at(r, col.form).toLowerCase() : "очна",
+      special_status: at(r, col.st),
+      meal_benefit:   at(r, col.ben).replace(/\D/g, ""),
+      enrolled_on: normDate(at(r, col.enr)),
+      left_on:     normDate(at(r, col.out))
+    })).filter(c => c.full_name);
+
+    if(!payload.length) throw new Error("Жодного рядка з прізвищем не знайдено");
+    info.textContent = `Завантажую ${payload.length}…`;
+
+    const { data, error } = await sb.from("children").insert(payload).select();
+    if(error) throw error;
+    S.children.push(...data);
+    closeLayer(); rerender();
+    toast(`Додано дітей: ${data.length}`);
+  }catch(e){
+    info.textContent = "Помилка: " + (e.message || "не вдалося прочитати файл");
+    info.style.color = "var(--absent)";
+  }
 }
 
 async function deleteChild(id){
@@ -495,9 +648,9 @@ function viewKids(){
   const groups = [...new Set(S.children.map(c => c.group_name).filter(Boolean))];
   const th = (k,l,cls="") => `<th class="${cls} sortable ${S.sortKey===k?"act":""}" onclick="sortBy('${k}')">${l}${
     S.sortKey===k ? (S.sortDir>0?" ↑":" ↓") : ""}</th>`;
-  const addRow = pos => ro() ? "" :
+  const addRow = () => ro() ? "" :
     `<tr class="addrow"><td class="num"></td><td class="name" colspan="12">
-       <button onclick="addChild('${pos}')">+ Додати дитину</button></td></tr>`;
+       <button onclick="addChildDialog()">+ Додати дитину</button></td></tr>`;
   const inp = (c, f, attr="") => ro()
     ? `<td>${esc(c[f]||"")}</td>`
     : `<td><input ${attr} value="${esc(c[f]||"")}" oninput="editChild(${c.id},'${f}',this.value)"></td>`;
@@ -517,6 +670,8 @@ function viewKids(){
       <option value="">Усі групи</option>
       ${groups.map(g => `<option ${S.groupFilter===g?"selected":""}>${esc(g)}</option>`).join("")}
     </select>
+    ${ro() ? "" : `<button class="btn btn-accent" onclick="addChildDialog()">+ Додати дитину</button>
+    <button class="btn" onclick="importDialog()">Імпорт</button>`}
     <button class="btn" onclick="exportKids()">Excel</button>
   </div>
   <datalist id="gr">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist>
@@ -537,8 +692,8 @@ function viewKids(){
       <th style="min-width:52px"></th>
     </tr></thead>
     <tbody>
-      ${addRow("top")}
-      ${list.map((c,i) => `<tr>
+      ${addRow()}
+      ${list.map((c,i) => `<tr data-child="${c.id}" class="${S.highlight===c.id?"fresh":""}">
         <td class="num">${i+1}</td>
         ${ro() ? `<td class="name">${esc(c.full_name)}</td>`
                : `<td class="name"><input value="${esc(c.full_name)}" oninput="editChild(${c.id},'full_name',this.value)"></td>`}
@@ -550,7 +705,7 @@ function viewKids(){
         ${inp(c,"enrolled_on",'type="date"')}${inp(c,"left_on",'type="date"')}
         <td>${ro()?"":`<button class="mini" onclick="deleteChild(${c.id})">✕</button>`}</td>
       </tr>`).join("")}
-      ${addRow("bottom")}
+      ${addRow()}
     </tbody></table></div>
   <p class="legend">Зміни зберігаються самі. Дата вибуття закриває дитину: з наступного дня в сітці «виб»,
      історія відвідування зберігається.</p>`;
