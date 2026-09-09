@@ -25,6 +25,10 @@ button{cursor:pointer}
 .field{margin-bottom:11px}
 .field label{display:block;font-size:12.5px;color:var(--ink-soft);margin-bottom:4px}
 .field input{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.pw-wrap{position:relative}
+.pw-wrap input{padding-right:92px}
+.pw-eye{position:absolute;right:5px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:var(--brand);font-size:12.5px;font-weight:700;padding:8px 9px;border-radius:8px}
+.pw-eye:hover{background:var(--brand-soft)}
 input:focus,select:focus{outline:2px solid var(--brand);outline-offset:1px;border-color:transparent}
 .err{background:var(--absent-bg);color:var(--absent);font-size:13px;font-weight:600;padding:9px 12px;border-radius:10px;margin:0 0 10px}
 .credit-small{margin-top:22px;font-size:11.5px;color:var(--ink-soft);text-align:center;line-height:1.7}
@@ -114,6 +118,23 @@ table.edit td{padding:0;height:34px}
 table.edit input,table.edit select{width:100%;height:34px;border:0;background:transparent;padding:0 7px;font-size:12.5px;border-radius:0}
 table.edit input:focus,table.edit select:focus{outline:2px solid var(--brand);outline-offset:-2px;background:var(--card)}
 table.edit td.name input{font-weight:600}
+
+/* таблиця дітей — перегляд */
+table.grid td{height:34px;max-width:0}
+table.grid td .cut{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+table.grid td.name,table.grid th.name{left:66px}
+table.grid td.act,table.grid th.act{position:sticky;left:32px;width:34px;min-width:34px;background:var(--card);z-index:3;padding:0}
+table.grid th.act{z-index:6}
+table.grid td.act .mini{padding:4px 8px;font-size:12px;color:var(--brand);border-color:var(--brand-soft);background:var(--brand-soft)}
+table.grid td.name{min-width:200px}
+table.grid .w-group{min-width:150px}
+table.grid .w-par{min-width:210px}
+table.grid .w-adr{min-width:240px}
+table.grid .w-tel{min-width:120px}
+table.grid .w-form{min-width:170px}
+table.grid .w-st{min-width:230px}
+table.grid tr.gone-row td.name{color:var(--gone);text-decoration:line-through}
+table.grid tbody tr:hover td{background:var(--paper)}
 tr.addrow td{height:38px;background:var(--paper)}
 tr.addrow button{width:100%;border:0;background:transparent;color:var(--brand);font-weight:700;font-size:12.5px;text-align:left;padding:0 7px;height:38px}
 .mini{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:3px 7px;font-size:11px;font-weight:700;color:var(--ink-soft)}
@@ -153,7 +174,11 @@ tr.fresh td.num,tr.fresh td.name{background:var(--brand-soft)}
 /* ---------- Модальні вікна ---------- */
 .modal{position:fixed;inset:0;z-index:80;background:rgba(20,35,30,.35);display:flex;align-items:center;justify-content:center;padding:20px}
 .modal .box{background:var(--card);border-radius:16px;padding:18px;width:100%;max-width:340px;max-height:90vh;overflow:auto}
+.modal .box.wide{max-width:420px}
 .modal h3{margin:0 0 12px;font-size:17px;font-weight:800}
+.modal .field select{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.modal .hint{font-size:12px;color:var(--ink-soft);margin:10px 0 14px;line-height:1.6}
+.btn-danger{border-color:var(--absent-bg);background:var(--absent-bg);color:var(--absent)}
 
 @media(max-width:430px){
   .grouprow{top:92px}
