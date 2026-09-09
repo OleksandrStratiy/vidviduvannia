@@ -24,7 +24,10 @@
       </div>
       <div class="field">
         <label for="pw">Пароль</label>
-        <input id="pw" name="password" type="password" autocomplete="current-password" required>
+        <div class="pw-wrap">
+          <input id="pw" name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="pw-eye" id="pwEye" aria-label="Показати пароль">Показати</button>
+        </div>
       </div>
       <p class="err hidden" id="loginErr"></p>
       <button class="btn-main" type="submit" id="loginBtn">Увійти</button>
