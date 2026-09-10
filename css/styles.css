@@ -171,6 +171,9 @@ tr.fresh td.num,tr.fresh td.name{background:var(--brand-soft)}
 .modal .box.wide{max-width:420px}
 .modal h3{margin:0 0 12px;font-size:17px;font-weight:800}
 .modal .field select{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chip{border:1px solid var(--line);background:var(--paper);color:var(--ink-soft);border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600}
+.chip:hover,.chip:active{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
 .modal .hint{font-size:12px;color:var(--ink-soft);margin:10px 0 14px;line-height:1.6}
 .btn-danger{border-color:var(--absent-bg);background:var(--absent-bg);color:var(--absent)}
 .setrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
