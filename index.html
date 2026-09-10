@@ -20,12 +20,14 @@
     <form id="loginForm" autocomplete="on">
       <div class="field">
         <label for="lg">Логін</label>
-        <input id="lg" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        <input id="lg" name="username" autocomplete="username" inputmode="text"
+               autocapitalize="none" autocorrect="off" spellcheck="false" required>
       </div>
       <div class="field">
         <label for="pw">Пароль</label>
         <div class="pw-wrap">
-          <input id="pw" name="password" type="password" autocomplete="current-password" required>
+          <input id="pw" name="password" type="password" autocomplete="current-password"
+                 autocapitalize="none" autocorrect="off" spellcheck="false" required>
           <button type="button" class="pw-eye" id="pwEye" aria-label="Показати пароль">Показати</button>
         </div>
       </div>
