@@ -54,19 +54,55 @@ function fail(e){ console.error(e); toast(e?.message || "Помилка з'єд�
 /* =====================================================================
    Авторизація
    ===================================================================== */
+/* Мобільні клавіатури люблять підставити велику першу літеру, зайвий пробіл
+   або «розумне» тире — через це перша спроба входу зривалась, а друга,
+   уже уважніша, проходила. Тому чистимо введене перед відправкою. */
+function cleanCredential(v){
+  return String(v)
+    .replace(/[\u00A0\u2000-\u200B\uFEFF]/g, " ")   // нерозривні та тонкі пробіли
+    .replace(/[\u2010-\u2015\u2212]/g, "-")          // «розумні» тире → звичайний дефіс
+    .replace(/[\u2018\u2019\u201C\u201D]/g, "'")    // «розумні» лапки
+    .trim();
+}
+
+let loginBusy = false;
 el("loginForm").addEventListener("submit", async ev => {
   ev.preventDefault();
+  if(loginBusy) return;
   const btn = el("loginBtn"), errBox = el("loginErr");
-  const login = el("lg").value.trim().toLowerCase();
-  const pass  = el("pw").value;
-  if(!login || !pass) return;
+  const login = cleanCredential(el("lg").value).toLowerCase();
+  const pass  = cleanCredential(el("pw").value);
+  if(!login || !pass){
+    errBox.textContent = "Впишіть логін і пароль";
+    errBox.classList.remove("hidden");
+    return;
+  }
+  loginBusy = true;
   btn.disabled = true; btn.textContent = "Заходимо…"; errBox.classList.add("hidden");
   const email = login.includes("@") ? login : `${login}@${LOGIN_DOMAIN}`;
-  const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+
+  let error = null;
+  try{
+    ({ error } = await sb.auth.signInWithPassword({ email, password: pass }));
+  }catch(e){ error = e }
+
+  loginBusy = false;
   btn.disabled = false; btn.textContent = "Увійти";
+
   if(error){
-    errBox.textContent = "Невірний логін або пароль";
+    const msg  = String(error.message || "");
+    const code = error.status || error.code || "";
+    if(/invalid login credentials|invalid_credentials/i.test(msg) || code === 400){
+      errBox.textContent = "Невірний логін або пароль. Перевірте розкладку та великі літери — пароль пишеться малими.";
+    }else if(code === 429 || /rate limit|too many/i.test(msg)){
+      errBox.textContent = "Забагато спроб поспіль. Зачекайте хвилину і спробуйте ще раз.";
+    }else if(/failed to fetch|networkerror/i.test(msg)){
+      errBox.textContent = "Немає зв'язку з сервером. Перевірте інтернет і спробуйте ще раз.";
+    }else{
+      errBox.textContent = "Не вдалося увійти: " + (msg || "невідома помилка");
+    }
     errBox.classList.remove("hidden");
+    console.error("Помилка входу:", error);
     return;
   }
   el("pw").value = "";
