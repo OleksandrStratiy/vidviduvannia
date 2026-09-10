@@ -14,22 +14,42 @@ const STATUSES_REF = ["з інвалідністю","із багатодітно
 const GROUPS_HINT = ["молодша","середня","старша","різновікова"];
 const MARK = {N:"н", H:"хв", K:"кор", V:"виб"};
 const MARK_FULL = {P:"Присутній", N:"Відсутній", H:"Хворіє", K:"За кордоном"};
+/* Поля, які імпорт доповнює в наявних дітей, якщо в базі вони порожні */
+const FILL_FIELDS = ["group_name","birth_date","parents","address","phone",
+  "special_status","meal_benefit","enrolled_on","left_on"];
 
 /* ---------- Стан ---------- */
 const S = {
   profile:null, institutions:[], years:[], yearId:null,
-  instId:null, children:[], marks:{}, holidays:new Set(), holidayTitles:{},
+  instId:null, children:[], marks:{}, conf:{}, holidays:new Set(), holidayTitles:{},
   tab:"today", curDate:todayISO(), vy:null, vm:null,
   search:"", groupFilter:"", sortKey:"group", sortDir:1,
-  community:null, summary:null, busy:false, keepScroll:false, highlight:null
+  community:null, summary:null, busy:false, keepScroll:false, saving:false,
+  flash:new Set(),   // щойно змінені діти — підсвічуються зеленим
+  open:{},           // розгорнуті групи на «Сьогодні»: instId → Set ключів
+  sel:null           // режим вибору на «Діти»: Set id або null
 };
+
+/* Обробники в розмітці отримують значення через ці масиви, а не через текст,
+   вставлений у onclick, — тож назва групи з лапками нічого не зламає. */
+let RV = [], RL = [];
+const rv = v => RV.push(v) - 1;   // основна сторінка (скидається при кожному рендері)
+const rl = v => RL.push(v) - 1;   // вікна поверх сторінки
 
 /* ---------- Дрібні хелпери ---------- */
 function todayISO(){ return iso(new Date()) }
 function iso(d){ return new Date(d.getTime() - d.getTimezoneOffset()*6e4).toISOString().slice(0,10) }
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])) }
+function tidy(s){ return String(s ?? "").replace(/\s+/g, " ").trim() }
+function cap(s){ return s ? s.charAt(0).toUpperCase() + s.slice(1) : s }
+function plural(n, one, few, many){
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+}
+function kidsWord(n){ return n + " " + plural(n, "дитина", "дитини", "дітей") }
 function fmtLong(s){ return new Date(s).toLocaleDateString("uk-UA",{day:"numeric",month:"long",weekday:"long"}) }
 function fmtShort(s){ return new Date(s).toLocaleDateString("uk-UA") }
+function fmtTime(ts){ return new Date(ts).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"}) }
 function monthName(y,m){ return new Date(y,m,1).toLocaleDateString("uk-UA",{month:"long",year:"numeric"}) }
 function isWeekend(s){ const w = new Date(s).getDay(); return w===0 || w===6 }
 function isWork(s){ return !isWeekend(s) && !S.holidays.has(s) }
@@ -43,13 +63,110 @@ function ro(){ return isAdmin() }               // відділ освіти —
 function el(id){ return document.getElementById(id) }
 
 let toastTimer;
-function toast(msg, bad){
+function toast(msg, bad, ms){
   const t = el("toast");
   t.textContent = msg; t.classList.toggle("bad", !!bad); t.classList.add("on");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=> t.classList.remove("on"), bad ? 3500 : 1200);
+  toastTimer = setTimeout(()=> t.classList.remove("on"), ms || (bad ? 3500 : 1400));
 }
 function fail(e){ console.error(e); toast(e?.message || "Помилка з'єднання з базою", true) }
+function openLayer(html){ el("layer").innerHTML = html }
+function closeLayer(){ el("layer").innerHTML = "" }
+
+/* Висота шапки — щоб заголовки груп прилипали точно під нею */
+function syncHeader(){
+  const h = document.querySelector("header.top");
+  if(h && h.offsetHeight) document.documentElement.style.setProperty("--hdr", h.offsetHeight + "px");
+}
+addEventListener("resize", syncHeader);
+
+/* Excel прибирає нуль на початку номера: 971234567 → 0971234567 */
+function fixPhone(p){ p = tidy(p); return /^[1-9]\d{8}$/.test(p) ? "0" + p : p }
+
+/* =====================================================================
+   Групи
+   Назву групи вписують від руки, тож «Старша», «старша», «Cтарша»
+   з латинською C чи «старша - різновікова» з пробілами — це одна група.
+   nkey() зводить такі варіанти до одного ключа.
+   ===================================================================== */
+const LAT = {a:"а",b:"в",c:"с",e:"е",h:"н",i:"і",k:"к",m:"м",o:"о",p:"р",t:"т",x:"х",y:"у"};
+const LATCASE = {A:"А",B:"В",C:"С",E:"Е",H:"Н",I:"І",K:"К",M:"М",O:"О",P:"Р",T:"Т",X:"Х",Y:"У",
+                 a:"а",c:"с",e:"е",i:"і",o:"о",p:"р",x:"х",y:"у"};
+function nkey(s){
+  return String(s ?? "").toLowerCase()
+    .replace(/[abcehikmoptxy]/g, ch => LAT[ch])
+    .replace(/[ʼ’‘'`´]/g, "")
+    .replace(/№\s*/g, "№")
+    .replace(/[\s\u2010-\u2015-]+/g, " ")
+    .trim();
+}
+/* Охайний вигляд назви: латинські двійники → кирилиця, без пробілів навколо дефіса */
+function tidyGroup(s){
+  let t = tidy(s);
+  if(/[а-яіїєґА-ЯІЇЄҐ]/.test(t)) t = t.replace(/[ABCEHIKMOPTXYaceiopxy]/g, ch => LATCASE[ch]);
+  return t.replace(/\s*[\u2010-\u2015-]\s*/g, "-").replace(/№\s+/g, "№");
+}
+/* Порядок: раннього віку → І молодша → ІІ молодша → середня → старша →
+   різновікова → решта за назвою → «без групи» в кінці */
+function groupRank(k){
+  if(!k) return 99;
+  if(/раннь|ясел|ясл/.test(k)) return 0;
+  if(/молодш/.test(k)) return /(^| )(іі|2|друга)( |$)/.test(k) ? 2 : /(^| )(і|1|перша)( |$)/.test(k) ? 1 : 2;
+  if(/середн/.test(k)) return 3;
+  if(/старш/.test(k)) return 4;
+  if(/різновік/.test(k)) return 5;
+  return 6;
+}
+function byName(a,b){ return (a.full_name || "").localeCompare(b.full_name || "", "uk") }
+
+/* ключ групи → найуживаніший варіант назви в закладі */
+function groupNames(){
+  const cnt = new Map();
+  S.children.forEach(c => {
+    const k = nkey(c.group_name);
+    if(!k) return;
+    const nm = tidyGroup(c.group_name);
+    if(!cnt.has(k)) cnt.set(k, {});
+    const o = cnt.get(k); o[nm] = (o[nm] || 0) + 1;
+  });
+  const out = new Map();
+  cnt.forEach((o, k) => out.set(k, Object.keys(o).sort((a,b) => o[b] - o[a] || a.localeCompare(b, "uk"))[0]));
+  return out;
+}
+/* Розкладає список дітей по групах у правильному порядку */
+function groupsOf(list){
+  const names = groupNames(), m = new Map();
+  list.forEach(c => {
+    const k = nkey(c.group_name);
+    if(!m.has(k)) m.set(k, { key:k, name: k ? (names.get(k) || tidyGroup(c.group_name)) : "", kids:[] });
+    m.get(k).kids.push(c);
+  });
+  const arr = [...m.values()];
+  arr.forEach(g => g.kids.sort(byName));
+  return arr.sort((a,b) => groupRank(a.key) - groupRank(b.key) ||
+                           a.name.localeCompare(b.name, "uk", {numeric:true}));
+}
+function groupTitle(name){
+  if(!name) return "Без групи";
+  return /груп/i.test(name) ? cap(name) : `Група «${name}»`;
+}
+/* Якщо таку групу вже вписано інакше — беремо наявне написання */
+function canonGroup(v){
+  const k = nkey(v);
+  if(!k) return "";
+  return groupNames().get(k) || tidyGroup(v);
+}
+/* Фільтр груп: "" — усі, "~" — діти без групи */
+function gfOk(key){ return !S.groupFilter || S.groupFilter === (key || "~") }
+function groupSelect(groups){
+  if(groups.length < 2 && !S.groupFilter) return "";
+  return `<select class="grpsel" aria-label="Група" onchange="setGroupFilter(this.value)">
+    <option value="">Усі групи</option>
+    ${groups.map(g => { const v = g.key || "~";
+      return `<option value="${esc(v)}" ${S.groupFilter===v?"selected":""}>${esc(groupTitle(g.name))} (${g.kids.length})</option>` }).join("")}
+  </select>`;
+}
+function setGroupFilter(v){ S.groupFilter = v; rerender() }
 
 /* =====================================================================
    Авторизація
@@ -129,7 +246,7 @@ el("yearSel").addEventListener("change", ev => {
   const y = curYear();
   const st = new Date(y.starts_on);
   S.vy = st.getFullYear(); S.vm = st.getMonth();
-  if(S.curDate < y.starts_on || S.curDate > y.ends_on) S.curDate = y.starts_on;
+  if(S.curDate < y.starts_on || S.curDate > yearEnd(y)) S.curDate = y.starts_on;
   reload();
 });
 
@@ -174,6 +291,9 @@ function showLogin(){
 }
 function instName(id){ const i = S.institutions.find(x => x.id === id); return i ? i.name : "—" }
 function curYear(){ return S.years.find(y => y.id === S.yearId) || S.years[0] }
+/* Літо після кінця навчального року (до 31 серпня) теж належить цьому року:
+   садочки працюють і влітку, а новий рік починається лише у вересні. */
+function yearEnd(y){ const aug = y.ends_on.slice(0,4) + "-08-31"; return y.ends_on > aug ? y.ends_on : aug }
 
 /* Завантажує все потрібне для поточної вкладки */
 async function reload(){
@@ -186,9 +306,9 @@ async function reload(){
       if(error) throw error;
       S.community = data || [];
     } else if(S.tab === "summary"){
-      const days = workDays(S.vy, S.vm);
+      /* Межі місяця; робочі дні кожного закладу рахує сама база */
       const { data, error } = await sb.rpc("community_period",
-        { p_from: days[0] || iso(new Date(S.vy,S.vm,1)), p_to: days[days.length-1] || iso(new Date(S.vy,S.vm+1,0)) });
+        { p_from: iso(new Date(S.vy, S.vm, 1)), p_to: iso(new Date(S.vy, S.vm+1, 0)) });
       if(error) throw error;
       S.summary = data || [];
     } else {
@@ -234,11 +354,17 @@ async function loadChildren(){
 async function loadMonth(){
   const from = iso(new Date(S.vy, S.vm, 1)), to = iso(new Date(S.vy, S.vm+1, 0));
   const lo = S.curDate < from ? S.curDate : from, hi = S.curDate > to ? S.curDate : to;
-  const { data, error } = await sb.from("attendance").select("child_id,day,mark")
-    .eq("institution_id", S.instId).gte("day", lo).lte("day", hi);
-  if(error) throw error;
+  const [att, conf] = await Promise.all([
+    sb.from("attendance").select("child_id,day,mark")
+      .eq("institution_id", S.instId).gte("day", lo).lte("day", hi),
+    sb.from("day_confirmations").select("day,confirmed_at")
+      .eq("institution_id", S.instId).gte("day", lo).lte("day", hi)
+  ]);
+  if(att.error) throw att.error;
   S.marks = {};
-  (data || []).forEach(r => S.marks[r.child_id + "|" + r.day] = r.mark);
+  (att.data || []).forEach(r => S.marks[r.child_id + "|" + r.day] = r.mark);
+  S.conf = {};
+  if(!conf.error) (conf.data || []).forEach(r => S.conf[r.day] = r.confirmed_at || true);
 }
 
 /* =====================================================================
@@ -273,6 +399,50 @@ async function setMark(childId, day, mark){
 }
 
 /* =====================================================================
+   Підтвердження дня
+   Зберігаються лише пропуски, тож садочок, який сьогодні нічого не вносив,
+   для відділу освіти виглядав би як «усі присутні». Кнопка «Підтвердити
+   день» показує, що відвідування за цей день справді внесено.
+   ===================================================================== */
+async function confirmDay(){
+  const day = S.curDate;
+  try{
+    const { data, error } = await sb.from("day_confirmations")
+      .upsert({ institution_id: S.instId, day, confirmed_at: new Date().toISOString() },
+              { onConflict: "institution_id,day" })
+      .select().single();
+    if(error) throw error;
+    S.conf[day] = (data && data.confirmed_at) || new Date().toISOString();
+    rerender(); toast("День підтверджено");
+  }catch(e){ fail(e) }
+}
+async function unconfirmDay(){
+  const day = S.curDate;
+  try{
+    const { error } = await sb.from("day_confirmations").delete()
+      .eq("institution_id", S.instId).eq("day", day);
+    if(error) throw error;
+    delete S.conf[day];
+    rerender(); toast("Підтвердження знято");
+  }catch(e){ fail(e) }
+}
+function confirmBar(holiday){
+  if(ro() || holiday || S.curDate > todayISO() || !yearKids().length) return "";
+  const c = S.conf[S.curDate], isToday = S.curDate === todayISO();
+  if(c){
+    const when = c === true ? "" : (iso(new Date(c)) === S.curDate ? " о " + fmtTime(c)
+      : " " + new Date(c).toLocaleDateString("uk-UA",{day:"numeric",month:"numeric"}) + " о " + fmtTime(c));
+    return `<div class="confdock done" role="region" aria-label="Підтвердження дня"><div class="confin">
+      <span class="ctext"><b>✓ День підтверджено${when}</b><small>Відділ освіти бачить, що дані внесено.</small></span>
+      <button class="linkbtn" onclick="unconfirmDay()">Скасувати</button></div></div>`;
+  }
+  return `<div class="confdock" role="region" aria-label="Підтвердження дня"><div class="confin">
+    <span class="ctext"><b>Усіх відсутніх ${isToday ? "" : "за " + fmtShort(S.curDate) + " "}позначено?</b>
+      <small>Відділ освіти побачить, що день заповнено.</small></span>
+    <button class="btn btn-accent" onclick="confirmDay()">Підтвердити день</button></div></div>`;
+}
+
+/* =====================================================================
    Картка дитини — додавання і редагування в одному вікні
    ===================================================================== */
 const CHILD_FIELDS = [
@@ -290,91 +460,109 @@ const CHILD_FIELDS = [
 ];
 
 function childDialog(id){
+  RL = [];
   const c = id ? S.children.find(x => x.id === id) : null;
   const isNew = !c;
-  const val = f => c ? (c[f] ?? "") : (f === "group_name" ? (S.groupFilter || "") :
-                                       f === "enrolled_on" ? todayISO() :
-                                       f === "edu_form" ? "очна" : "");
+  const y = curYear();
+  const defGroup = S.groupFilter && S.groupFilter !== "~" ? (groupNames().get(S.groupFilter) || "") : "";
+  const val = f => c ? (c[f] ?? "") : (f === "group_name" ? defGroup : f === "edu_form" ? "очна" : "");
+  const chips = list => `<div class="chips">${list.join("")}</div>`;
+  const chip = (label, id, v, title) =>
+    `<button type="button" class="chip" ${title ? `title="${esc(title)}"` : ""}
+       onclick="setField('${id}', RL[${rl(v)}])">${esc(label)}</button>`;
+
   const fieldHTML = ([f, label, type, extra]) => {
     const v = esc(val(f));
     let input;
     if(type === "select"){
-      input = `<select id="cf_${f}">${["<option value=\"\"></option>"]
-        .concat(extra.map(o => `<option ${val(f)===o?"selected":""}>${esc(o)}</option>`)).join("")}</select>`;
+      /* значення, якого немає у списку (напр. з імпорту), не губимо — показуємо окремим пунктом */
+      const opts = extra.includes(val(f)) || !val(f) ? extra : [val(f), ...extra];
+      input = `<select id="cf_${f}"><option value=""></option>${
+        opts.map(o => `<option ${val(f)===o?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
     }else if(type === "group"){
-      input = `<input id="cf_${f}" autocomplete="off" value="${v}" placeholder="${esc(extra)}">
-               <div class="chips">${GROUPS_HINT.map(g =>
-                 `<button type="button" class="chip" onclick="pickGroup('${g}')">${esc(g)}</button>`).join("")}</div>`;
+      const names = groupsOf(S.children).filter(g => g.key).map(g => g.name);
+      input = `<input id="cf_${f}" autocomplete="off" value="${v}" placeholder="${esc(extra)}">`
+        + chips((names.length ? names : GROUPS_HINT).map(g => chip(g, "cf_group_name", g)));
     }else if(type === "date"){
       input = `<input id="cf_${f}" type="date" value="${v}">`;
+      if(f === "enrolled_on") input += chips([chip("Сьогодні", "cf_enrolled_on", todayISO()),
+        y ? chip("Початок року", "cf_enrolled_on", y.starts_on, fmtShort(y.starts_on)) : ""]);
+      if(f === "left_on") input += chips([chip("Сьогодні", "cf_left_on", todayISO()),
+        y ? chip("Кінець року", "cf_left_on", y.ends_on, fmtShort(y.ends_on)) : ""]);
     }else{
       input = `<input id="cf_${f}" type="${type}" autocomplete="off" value="${v}" placeholder="${esc(extra)}">`;
     }
     return `<div class="field"><label for="cf_${f}">${label}</label>${input}</div>`;
   };
 
-  el("layer").innerHTML = `
+  openLayer(`
   <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box wide">
     <h3>${isNew ? "Нова дитина" : "Картка дитини"}</h3>
     ${CHILD_FIELDS.map(fieldHTML).join("")}
-    <p class="hint">Дата вибуття закриває дитину: з наступного дня в сітці стоїть «виб»,
-       але вся історія відвідування зберігається.</p>
+    <p class="hint">Дату зарахування можна лишити порожньою, якщо дитина ходить з початку року.
+       Дата вибуття — останній день у закладі: з наступного дня в сітці стоїть «виб»,
+       а вся історія відвідування зберігається.</p>
     <button class="btn-main" onclick="saveChild(${id || "null"}, false)">Зберегти</button>
     ${isNew ? `<button class="btn" style="width:100%;margin-top:7px" onclick="saveChild(null, true)">Зберегти і додати ще</button>` : ""}
     <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
     ${isNew ? "" : `<button class="btn btn-danger" style="width:100%;margin-top:14px" onclick="deleteChild(${id})">Видалити дитину</button>`}
-  </div></div>`;
-  setTimeout(() => el("cf_full_name").focus(), 50);
+  </div></div>`);
+  setTimeout(() => el("cf_full_name") && el("cf_full_name").focus(), 50);
 }
 
-function pickGroup(g){
-  const f = el("cf_group_name");
+function setField(id, v){
+  const f = el(id);
   if(!f) return;
-  f.value = g;
+  f.value = v;
   f.focus();
 }
 
 function readChildForm(){
   const o = { institution_id: S.instId };
   CHILD_FIELDS.forEach(([f,,type]) => {
-    const v = el("cf_" + f).value.trim();
+    const v = tidy(el("cf_" + f).value);
     o[f] = (type === "date") ? (v || null) : v;
   });
+  o.group_name = canonGroup(o.group_name);
+  o.phone = fixPhone(o.phone);
   return o;
 }
 
 async function saveChild(id, again){
+  if(S.saving) return;
   const payload = readChildForm();
   if(!payload.full_name) return toast("Впишіть прізвище та ім'я", true);
+  if(payload.enrolled_on && payload.left_on && payload.left_on < payload.enrolled_on)
+    return toast("Дата вибуття раніша за дату зарахування", true);
+  S.saving = true;
   try{
     if(id){
       const { data, error } = await sb.from("children").update(payload).eq("id", id).select().single();
       if(error) throw error;
-      const i = S.children.findIndex(x => x.id === id);
-      if(i >= 0) S.children[i] = data;
-      S.highlight = id;
-      closeLayer(); rerender(); scrollToHighlight();
+      mergeKids([data]);
+      S.flash = new Set([id]);
+      closeLayer(); rerender(); scrollToFlash();
       warnIfMismatch(payload, data);
     }else{
       const { data, error } = await sb.from("children").insert(payload).select().single();
       if(error) throw error;
       S.children.push(data);
-      S.highlight = data.id;
+      S.flash = new Set([data.id]);
       warnIfMismatch(payload, data, true);
       if(again){
+        /* вікно лишається, група — теж; очищаємо лише дані самої дитини */
         ["full_name","birth_date","parents","address","phone"].forEach(f => el("cf_" + f).value = "");
+        rerender();                  // оновлюємо таблицю під вікном, саме вікно не чіпаємо
         el("cf_full_name").focus();
-        renderBehindModal();
       }else{
-        closeLayer(); rerender(); scrollToHighlight();
+        closeLayer(); rerender(); scrollToFlash();
       }
     }
   }catch(e){ fail(e) }
+  finally{ S.saving = false }
 }
 
-/* Перевіряє, що поля справді записались такими, якими їх бачили на екрані.
-   Якщо ні (буває на старих браузерах, коли поле не встигло зафіксувати
-   введений текст) — попереджаємо, а не мовчки лишаємо дитину без групи. */
+/* Перевіряє, що ім'я і група записались такими, якими їх бачили на екрані */
 function warnIfMismatch(sent, saved, isNew){
   const bad = [];
   ["full_name","group_name"].forEach(f => {
@@ -387,16 +575,21 @@ function warnIfMismatch(sent, saved, isNew){
   }
 }
 
-function renderBehindModal(){
-  const saved = el("layer").innerHTML;
-  rerender();
-  el("layer").innerHTML = saved;
+function mergeKids(rows){
+  (rows || []).forEach(r => {
+    const i = S.children.findIndex(x => x.id === r.id);
+    if(i >= 0) S.children[i] = r; else S.children.push(r);
+  });
 }
-function scrollToHighlight(){
-  if(!S.highlight) return;
-  const row = document.querySelector(`tr[data-child="${S.highlight}"]`);
-  if(row) row.scrollIntoView({ block:"center", behavior:"smooth" });
-  setTimeout(() => { S.highlight = null }, 2500);
+let flashTimer;
+function scrollToFlash(){
+  const id = [...S.flash][0];
+  if(!id) return;
+  const row = document.querySelector(`tr[data-child="${id}"]`);
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if(row) row.scrollIntoView({ block:"center", behavior: calm ? "auto" : "smooth" });
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { S.flash = new Set() }, 2500);
 }
 
 async function deleteChild(id){
@@ -410,22 +603,28 @@ async function deleteChild(id){
   }catch(e){ fail(e) }
 }
 
-/* ---------- Імпорт зі списку ---------- */
+/* =====================================================================
+   Імпорт зі списку (CSV з Excel)
+   Нових дітей додає, а наявних (збіг за ПІБ) лише доповнює: заповнює
+   порожні поля. Нічого не видаляє і заповнених полів не перезаписує,
+   тож той самий файл можна завантажити повторно.
+   ===================================================================== */
 function importDialog(){
-  el("layer").innerHTML = `
+  RL = [];
+  openLayer(`
   <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
     <h3>Імпорт списку дітей</h3>
-    <p style="font-size:13px;color:var(--ink-soft);margin:0 0 12px">
-      Файл CSV у тому самому вигляді, що дає кнопка «Excel». Найпростіше:
-      вивантажте порожній шаблон, заповніть в Excel і завантажте назад.</p>
+    <p class="hint" style="margin-top:0">Файл CSV у тому самому вигляді, що дає кнопка «Excel».
+      Найпростіше: вивантажте шаблон, заповніть в Excel і завантажте назад.</p>
     <button class="btn" style="width:100%;margin-bottom:12px" onclick="downloadTemplate()">Завантажити шаблон</button>
-    <div class="field"><label>Оберіть заповнений файл (.csv)</label>
+    <div class="field"><label for="imp_file">Заповнений файл (.csv)</label>
       <input id="imp_file" type="file" accept=".csv,text/csv"></div>
-    <p id="imp_info" style="font-size:12.5px;color:var(--ink-soft);margin:8px 0 14px">
-      Діти додаються до <b>${esc(instName(S.instId))}</b>. Наявні записи не змінюються і не видаляються.</p>
-    <button class="btn-main" onclick="runImport()">Завантажити</button>
+    <p id="imp_info" class="hint">
+      Діти потрапляють до <b>${esc(instName(S.instId))}</b>. Нові додаються, а в тих, хто вже є
+      в списку, заповнюються лише порожні поля. Нічого не видаляється і не перезаписується.</p>
+    <button class="btn-main" id="imp_btn" onclick="runImport()">Завантажити</button>
     <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
-  </div></div>`;
+  </div></div>`);
 }
 function downloadTemplate(){
   download("shablon-dity.csv", [
@@ -434,6 +633,14 @@ function downloadTemplate(){
     ["Шевчук Марія Іванівна","молодша","2023-04-15","Шевчук О. П. / Шевчук І. В.",
      "с. Гибалівка, вул. Шкільна, 5","0971234567","очна","із багатодітної родини","50","2026-09-01",""]
   ]);
+}
+/* Excel в українській Windows зберігає «CSV (розділювач — крапка з комою)»
+   у кодуванні Windows-1251, а «CSV UTF-8» — в UTF-8. Приймаємо обидва. */
+async function readText(f){
+  const buf = await f.arrayBuffer();
+  const utf = new TextDecoder("utf-8").decode(buf);
+  if(!utf.includes("\uFFFD")) return utf;
+  try{ return new TextDecoder("windows-1251").decode(buf) }catch(e){ return utf }
 }
 /* Розбір CSV: підтримує ; та , як роздільник, лапки, перенос рядків у полі */
 function parseCSV(text){
@@ -456,79 +663,144 @@ function parseCSV(text){
   if(cell !== "" || row.length){ row.push(cell); rows.push(row) }
   return rows.filter(r => r.some(v => String(v).trim() !== ""));
 }
+/* Шукає стовпчики за заголовками. Стовпчик батьків шукаємо першим і так, щоб
+   «Прізвище, ім'я, по батькові» (там теж є «батьк») не сплутати з батьками. */
+function mapColumns(headRow){
+  const H = headRow.map(h => String(h).toLowerCase().replace(/[ʼ’‘`´]/g, "'").replace(/["\s]/g, ""));
+  const used = new Set();
+  const pick = test => {
+    const i = H.findIndex((h, j) => !used.has(j) && test(h));
+    if(i >= 0) used.add(i);
+    return i;
+  };
+  const col = {};
+  col.par   = pick(h => /батьк|опікун|мати|матір|матер/.test(h) && !/побатьков/.test(h));
+  col.name  = pick(h => /прізвищ|піб|ім'я|імя|имя|фіо|фио/.test(h));
+  if(col.name < 0) col.name = pick(h => /дитин/.test(h) && !/народж|дата/.test(h));
+  col.birth = pick(h => /народж/.test(h));
+  col.group = pick(h => /груп/.test(h));
+  col.adr   = pick(h => /адрес/.test(h));
+  col.tel   = pick(h => /телеф|^тел/.test(h));
+  col.form  = pick(h => /форм|здобут/.test(h));
+  col.st    = pick(h => /статус|категор/.test(h));
+  col.ben   = pick(h => /пільг/.test(h));
+  col.enr   = pick(h => /зарахов/.test(h));
+  col.out   = pick(h => /вибут|вибув/.test(h));
+  return col;
+}
 function normDate(v){
   v = String(v || "").trim();
   if(!v) return null;
   if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const m = v.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);   // 05.04.2023
-  if(m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+  const m = v.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4}|\d{2})$/);   // 05.04.2023 або 05.04.23
+  if(m) return `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
   return null;
 }
+function normForm(v){ const k = nkey(v); return FORMS.find(f => nkey(f) === k) || "" }
+function normStatus(v){ const k = nkey(v); return STATUSES_REF.find(s => nkey(s) === k) || tidy(v) }
+
 async function runImport(){
   const f = el("imp_file").files[0];
   if(!f) return toast("Оберіть файл", true);
-  const info = el("imp_info");
-  info.textContent = "Читаю файл…";
+  const info = el("imp_info"), btn = el("imp_btn");
+  info.style.color = ""; info.textContent = "Читаю файл…"; btn.disabled = true;
   try{
-    const rows = parseCSV(await f.text());
+    const rows = parseCSV(await readText(f));
     if(rows.length < 2) throw new Error("У файлі немає рядків з дітьми");
+    const col = mapColumns(rows[0]);
+    if(col.name < 0) throw new Error("Не знайдено стовпчик з прізвищем та ім'ям дитини");
 
-    const head = rows[0].map(h => h.toLowerCase().replace(/["\s]/g, ""));
-    const find = (...keys) => head.findIndex(h => keys.some(k => h.includes(k)));
-    const col = {
-      name:   find("прізвище","піб","ім'я","имя"),
-      group:  find("група"),
-      birth:  find("народж"),
-      par:    find("батьк","опікун"),
-      adr:    find("адрес"),
-      tel:    find("телефон"),
-      form:   find("форма","здобут"),
-      st:     find("статус"),
-      ben:    find("пільг"),
-      enr:    find("зарахов"),
-      out:    find("вибут")
-    };
-    if(col.name < 0) throw new Error("Не знайдено стовпчик з прізвищем та ім'ям");
+    const at = (r, i) => i >= 0 ? tidy(r[i]) : "";
+    const seen = new Set(), items = [];
+    rows.slice(1).forEach(r => {
+      const ben = at(r, col.ben).replace(/\D/g, "");
+      const p = {
+        full_name:  at(r, col.name),
+        group_name: canonGroup(at(r, col.group)),
+        birth_date: normDate(at(r, col.birth)),
+        parents:    at(r, col.par),
+        address:    at(r, col.adr),
+        phone:      fixPhone(at(r, col.tel)),
+        edu_form:   normForm(at(r, col.form)),
+        special_status: at(r, col.st) ? normStatus(at(r, col.st)) : "",
+        meal_benefit:   ben === "50" || ben === "100" ? ben : "",
+        enrolled_on: normDate(at(r, col.enr)),
+        left_on:     normDate(at(r, col.out))
+      };
+      if(!p.full_name) return;
+      const key = nkey(p.full_name) + "|" + (p.birth_date || "");
+      if(seen.has(key)) return;            // той самий рядок двічі у файлі
+      seen.add(key); items.push(p);
+    });
+    if(!items.length) throw new Error("Жодного рядка з прізвищем не знайдено");
 
-    const at = (r, i) => i >= 0 ? String(r[i] ?? "").trim() : "";
-    const payload = rows.slice(1).map(r => ({
-      institution_id: S.instId,
-      full_name:  at(r, col.name),
-      group_name: at(r, col.group),
-      birth_date: normDate(at(r, col.birth)),
-      parents:    at(r, col.par),
-      address:    at(r, col.adr),
-      phone:      at(r, col.tel),
-      edu_form:   FORMS.includes(at(r, col.form).toLowerCase()) ? at(r, col.form).toLowerCase() : "очна",
-      special_status: at(r, col.st),
-      meal_benefit:   at(r, col.ben).replace(/\D/g, ""),
-      enrolled_on: normDate(at(r, col.enr)),
-      left_on:     normDate(at(r, col.out))
-    })).filter(c => c.full_name);
+    /* зіставляємо з дітьми, які вже є в закладі */
+    const byName = new Map();
+    S.children.forEach(c => {
+      const k = nkey(c.full_name);
+      if(!byName.has(k)) byName.set(k, []);
+      byName.get(k).push(c);
+    });
+    const toAdd = [], toFill = [], unclear = [];
+    let same = 0;
+    items.forEach(p => {
+      const cands = (byName.get(nkey(p.full_name)) || [])
+        .filter(c => !p.birth_date || !c.birth_date || c.birth_date === p.birth_date);
+      if(cands.length === 0){
+        toAdd.push({ institution_id: S.instId, ...p, edu_form: p.edu_form || "очна" });
+      }else if(cands.length > 1){
+        unclear.push(p.full_name);
+      }else{
+        const c = cands[0], patch = {};
+        FILL_FIELDS.forEach(k => { if(p[k] && !c[k]) patch[k] = p[k] });
+        if(Object.keys(patch).length) toFill.push([c.id, patch]); else same++;
+      }
+    });
 
-    if(!payload.length) throw new Error("Жодного рядка з прізвищем не знайдено");
-    info.textContent = `Завантажую ${payload.length}…`;
+    let added = 0, filled = 0;
+    if(toAdd.length){
+      info.textContent = `Додаю нових: ${toAdd.length}…`;
+      const { data, error } = await sb.from("children").insert(toAdd).select();
+      if(error) throw error;
+      S.children.push(...(data || []));
+      added = (data || []).length;
+    }
+    for(let i = 0; i < toFill.length; i += 8){
+      info.textContent = `Доповнюю наявних: ${filled} з ${toFill.length}…`;
+      const part = toFill.slice(i, i + 8);
+      const res = await Promise.all(part.map(([id, patch]) =>
+        sb.from("children").update(patch).eq("id", id).select().single()));
+      for(const r of res){ if(r.error) throw r.error; mergeKids([r.data]); filled++ }
+    }
 
-    const { data, error } = await sb.from("children").insert(payload).select();
-    if(error) throw error;
-    S.children.push(...data);
-    closeLayer(); rerender();
-    toast(`Додано дітей: ${data.length}`);
+    rerender();
+    RL = [];
+    openLayer(`
+    <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
+      <h3>Імпорт завершено</h3>
+      <div class="kv"><span>Додано нових дітей</span><b>${added}</b></div>
+      <div class="kv"><span>Доповнено порожні поля</span><b>${filled}</b></div>
+      <div class="kv"><span>Уже були, змін не потрібно</span><b>${same}</b></div>
+      ${unclear.length ? `<p class="hint">Не зіставлено, бо в закладі кілька дітей з таким ПІБ:
+        <b>${unclear.slice(0, 6).map(esc).join(", ")}${unclear.length > 6 ? " та ще " + (unclear.length - 6) : ""}</b>.
+        Їх перевірте вручну.</p>` : ""}
+      <button class="btn-main" style="margin-top:12px" onclick="closeLayer()">Готово</button>
+    </div></div>`);
   }catch(e){
     info.textContent = "Помилка: " + (e.message || "не вдалося прочитати файл");
     info.style.color = "var(--absent)";
+    btn.disabled = false;
   }
 }
 
 /* =====================================================================
-   Навчальні роки
+   Навчальні роки (перемикач у шапці)
    ===================================================================== */
 function renderYears(){
   el("yearSel").innerHTML =
     S.years.map(y => `<option value="${y.id}" ${y.id===S.yearId?"selected":""}>${esc(y.name)} н.р.</option>`).join("")
     + (ro() ? "" : `<option value="__new">+ Новий рік…</option>`);
 }
-function closeLayer(){ el("layer").innerHTML = "" }
 
 /* =====================================================================
    Каркас
@@ -539,14 +811,26 @@ function renderTabs(){
     : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"],["settings","Налаштування"]];
   el("tabs").innerHTML = items.map(([k,l]) =>
     `<button class="${S.tab===k?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
+  syncHeader();
 }
-function go(k){ S.tab = k; renderTabs(); window.scrollTo(0,0); reload() }
-function pickInst(id){ S.instId = +id; S.yearId = null; S.years = []; reload() }
+function go(k){ S.tab = k; S.sel = null; renderTabs(); window.scrollTo(0,0); reload() }
+function pickInst(id){
+  S.instId = +id; S.yearId = null; S.years = []; S.groupFilter = ""; S.sel = null;
+  reload();
+}
 
 function render(){
-  const old = document.querySelector(".scroll");
-  const sl = old ? old.scrollLeft : 0, st = old ? old.scrollTop : 0, wy = window.scrollY;
+  RV = [];
   const v = el("view");
+  const old = v.querySelector(".scroll");
+  const sl = old ? old.scrollLeft : 0, st = old ? old.scrollTop : 0, wy = window.scrollY;
+  /* поле, в якому зараз курсор, після перемальовування отримує курсор назад —
+     інакше пошук губив фокус після кожної літери */
+  const ae = document.activeElement;
+  const fid = ae && ae.id && v.contains(ae) ? ae.id : null;
+  let caret = null;
+  try{ if(fid && typeof ae.selectionStart === "number") caret = [ae.selectionStart, ae.selectionEnd] }catch(e){}
+
   if(S.busy && !S.children.length && !S.community && !S.summary){
     v.innerHTML = `<div class="loading">Завантаження…</div>`;
   }else{
@@ -555,61 +839,99 @@ function render(){
       S.tab==="kids"  ? viewKids()  : S.tab==="report"? viewReport():
       S.tab==="summary"? viewSummary() : S.tab==="settings"? viewSettings() : viewCommunity();
   }
-  const ns = document.querySelector(".scroll");
-  if(ns && S.keepScroll){ ns.scrollLeft = sl; ns.scrollTop = st; window.scrollTo(0, wy) }
+  v.querySelectorAll("input[data-mixed]").forEach(x => x.indeterminate = true);
+  document.body.classList.toggle("selecting", !!v.querySelector(".selbar"));
+  document.body.classList.toggle("docked", !!v.querySelector(".confdock"));
+
+  if(fid){
+    const n = el(fid);
+    if(n){ n.focus({ preventScroll:true }); try{ if(caret) n.setSelectionRange(caret[0], caret[1]) }catch(e){} }
+  }
+  const ns = v.querySelector(".scroll");
+  if(S.keepScroll){
+    if(ns){ ns.scrollLeft = sl; ns.scrollTop = st }
+    window.scrollTo(0, wy);
+  }
   S.keepScroll = false;
 }
 function rerender(){ S.keepScroll = true; render() }
 
 function instPicker(){
   if(!isAdmin()) return "";
-  return `<select class="instsel" onchange="pickInst(this.value)">${
-    S.institutions.map(i => `<option value="${i.id}" ${i.id===S.instId?"selected":""}>${esc(i.name)}</option>`).join("")}</select>`;
+  return `<select class="instsel" aria-label="Заклад" onchange="pickInst(this.value)">${
+    S.institutions.map(i => `<option value="${i.id}" ${i.id===S.instId?"selected":""}>${esc(i.name)}${i.is_demo?" (демо)":""}</option>`).join("")}</select>`;
 }
 /* Дитина належить навчальному року, якщо її перебування в закладі
    перетинається з проміжком цього року. Вибула торік — у новому році її нема. */
 function inYear(c){
   const y = curYear();
   if(!y) return true;
-  if(c.enrolled_on && c.enrolled_on > y.ends_on)   return false;
-  if(c.left_on     && c.left_on   < y.starts_on)   return false;
+  if(c.enrolled_on && c.enrolled_on > yearEnd(y)) return false;
+  if(c.left_on     && c.left_on   < y.starts_on)  return false;
   return true;
 }
 function yearKids(){ return S.children.filter(inYear) }
 
 function sortedKids(){
-  const gi = c => (GROUPS_HINT.indexOf(c.group_name)+1 || 9);
-  const by = {
-    name:  c => c.full_name || "яяя",
-    group: c => String(gi(c)) + "|" + (c.group_name||"") + "|" + (c.full_name||"яяя"),
-    birth: c => c.birth_date || "9999-99-99",
-    manual:c => String(c.id)
-  }[S.sortKey] || (c => c.full_name);
-  return yearKids().sort((a,b) => String(by(a)).localeCompare(String(by(b)), "uk") * S.sortDir);
+  const order = new Map(groupsOf(S.children).map((g,i) => [g.key, i]));
+  const cmp = {
+    name:  byName,
+    group: (a,b) => order.get(nkey(a.group_name)) - order.get(nkey(b.group_name)) || byName(a,b),
+    birth: (a,b) => (a.birth_date || "9999").localeCompare(b.birth_date || "9999") || byName(a,b)
+  }[S.sortKey] || byName;
+  return yearKids().sort((a,b) => cmp(a,b) * S.sortDir);
 }
 function sortBy(k){ if(S.sortKey===k) S.sortDir = -S.sortDir; else { S.sortKey = k; S.sortDir = 1 } rerender() }
 
 /* =====================================================================
-   Вкладка «Сьогодні»
+   Вкладка «Сьогодні» — групи згортаються; за замовчуванням відкрита перша.
+   Які групи відкриті, пам'ятає кожен пристрій окремо.
    ===================================================================== */
+function openSet(groups){
+  let st = S.open[S.instId];
+  if(!st && groups.length){
+    let saved = [];
+    try{ saved = JSON.parse(localStorage.getItem("zdo-open-" + S.instId) || "[]") }catch(e){}
+    st = new Set((Array.isArray(saved) ? saved : []).filter(k => groups.some(g => g.key === k)));
+    if(!st.size) st.add(groups[0].key);
+    S.open[S.instId] = st;
+  }
+  return st || new Set();
+}
+function saveOpen(){
+  try{ localStorage.setItem("zdo-open-" + S.instId, JSON.stringify([...(S.open[S.instId] || [])])) }catch(e){}
+}
+function toggleGroup(key){
+  const st = S.open[S.instId] || (S.open[S.instId] = new Set());
+  st.has(key) ? st.delete(key) : st.add(key);
+  saveOpen(); rerender();
+}
+function toggleAllGroups(openAll){
+  const groups = groupsOf(yearKids().filter(c => inList(c, S.curDate)));
+  S.open[S.instId] = new Set(openAll ? groups.map(g => g.key) : []);
+  saveOpen(); rerender();
+}
+
 function viewToday(){
-  const list = sortedKids().filter(c => inList(c, S.curDate));
+  const day = S.curDate;
+  const list = yearKids().filter(c => inList(c, day));
+  const groups = groupsOf(list);
   const cnt = {P:0,N:0,H:0,K:0};
-  list.forEach(c => cnt[markOf(c, S.curDate)]++);
+  list.forEach(c => cnt[markOf(c, day)]++);
   const abs = cnt.N + cnt.H + cnt.K;
   const pct = list.length ? Math.round(cnt.P / list.length * 100) : 0;
-  const groups = [...new Set(list.map(c => c.group_name || "без групи"))];
-  const holiday = !isWork(S.curDate);
-  let n = 0;
+  const holiday = !isWork(day);
+  const open = openSet(groups);
+  const allOpen = groups.length > 0 && groups.every(g => open.has(g.key));
 
   return `${instPicker()}
   <div class="datebar">
-    <button class="btn" onclick="shiftDay(-1)" aria-label="Попередній день">‹</button>
-    <input type="date" value="${S.curDate}" onchange="setDate(this.value)">
-    <button class="btn" onclick="shiftDay(1)" aria-label="Наступний день">›</button>
+    <button class="btn" onclick="shiftDay(-1)" aria-label="Попередній робочий день">‹</button>
+    <input type="date" value="${day}" onchange="setDate(this.value)" aria-label="Дата">
+    <button class="btn" onclick="shiftDay(1)" aria-label="Наступний робочий день">›</button>
     <button class="btn" onclick="setDate('${todayISO()}')">Сьогодні</button>
   </div>
-  <h2 class="title">${fmtLong(S.curDate)}</h2>
+  <h2 class="title">${fmtLong(day)}</h2>
   <p class="note">${holiday
     ? "Неробочий день — відвідування не рахується."
     : "Зелена крапка = дитина в садочку. Позначайте лише тих, кого немає; повторний натиск знімає позначку."}</p>
@@ -619,22 +941,38 @@ function viewToday(){
     <div class="sum"><b>${pct}%</b><span>відвідування</span></div>
   </div>
   ${list.length === 0 ? `<div class="card">Список дітей порожній. Перейдіть на вкладку «Діти» і додайте дітей.</div>` : ""}
-  ${groups.map(g => {
-    const gl = list.filter(c => (c.group_name || "без групи") === g);
-    return `<div class="grouprow"><span>Група «${esc(g)}»</span>
-      <span>${gl.filter(c => markOf(c,S.curDate)==="P").length} з ${gl.length}</span></div>
-      <div class="list">${gl.map(c => {
-        const m = markOf(c, S.curDate); n++;
-        return `<div class="prow ${m==="P"?"":"m "+m}">
-          <span class="num">${n}</span><span class="dot"></span>
-          <span class="nm">${esc(c.full_name)}</span>
-          <span class="marks">${["N","H","K"].map(k =>
-            `<button class="mark" data-s="${k}" aria-pressed="${m===k}"
-               aria-label="${esc(c.full_name)}: ${MARK_FULL[k]}"
-               ${ro()?"disabled":`onclick="tapMark(${c.id},'${k}')"`}>${MARK[k]}</button>`).join("")}</span>
-        </div>`}).join("")}</div>`}).join("")}
+  ${groups.length > 1 ? `<div class="gtools"><button class="linkbtn" onclick="toggleAllGroups(${allOpen ? 0 : 1})">${
+      allOpen ? "Згорнути всі групи" : "Розгорнути всі групи"}</button></div>` : ""}
+  ${groups.map(g => groupCard(g, open.has(g.key), day)).join("")}
   <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp;
-     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув — ставиться датою вибуття на вкладці «Діти»</p>`;
+     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув — ставиться датою вибуття на вкладці «Діти»</p>
+  ${confirmBar(holiday)}`;
+}
+function groupCard(g, isOpen, day){
+  const c = {P:0,N:0,H:0,K:0};
+  g.kids.forEach(k => c[markOf(k, day)]++);
+  const badges = ["N","H","K"].filter(k => c[k])
+    .map(k => `<i class="${k}" title="${MARK_FULL[k]}: ${c[k]}">${MARK[k]} ${c[k]}</i>`).join("");
+  return `<section class="gcard${isOpen ? " open" : ""}">
+    <button class="ghead" aria-expanded="${isOpen}" onclick="toggleGroup(RV[${rv(g.key)}])">
+      <span class="chev" aria-hidden="true"></span>
+      <span class="gname">${esc(groupTitle(g.name))}</span>
+      <span class="gbadges">${badges}</span>
+      <span class="gcount"><b>${c.P}</b> з ${g.kids.length}</span>
+    </button>
+    ${isOpen ? `<div class="list">${g.kids.map((k,i) => kidRow(k, i+1, day)).join("")}</div>` : ""}
+  </section>`;
+}
+function kidRow(c, n, day){
+  const m = markOf(c, day);
+  return `<div class="prow ${m==="P"?"":"m "+m}">
+    <span class="num">${n}</span><span class="dot"></span>
+    <span class="nm">${esc(c.full_name)}</span>
+    <span class="marks">${["N","H","K"].map(k =>
+      `<button class="mark" data-s="${k}" aria-pressed="${m===k}"
+         aria-label="${esc(c.full_name)}: ${MARK_FULL[k]}"
+         ${ro()?"disabled":`onclick="tapMark(${c.id},'${k}')"`}>${MARK[k]}</button>`).join("")}</span>
+  </div>`;
 }
 function tapMark(id, k){
   const c = S.children.find(x => x.id === id);
@@ -648,41 +986,59 @@ function setDate(v){
   S.vy = d.getFullYear(); S.vm = d.getMonth();
   sameMonth ? rerender() : reload();
 }
-function shiftDay(n){ const d = new Date(S.curDate); d.setDate(d.getDate()+n); setDate(iso(d)) }
+/* Стрілки перескакують вихідні та неробочі дні закладу */
+function shiftDay(n){
+  const d = new Date(S.curDate);
+  for(let i = 0; i < 14; i++){
+    d.setDate(d.getDate() + n);
+    const s = iso(d);
+    if(S.tab === "community" ? !isWeekend(s) : isWork(s)) break;
+  }
+  (S.tab === "community" ? setDateReload : setDate)(iso(d));
+}
 
 /* =====================================================================
-   Вкладка «Місяць»
+   Вкладка «Місяць» — сітка з розділенням на групи
    ===================================================================== */
 function viewMonth(){
   const days = workDays(S.vy, S.vm);
-  const list = sortedKids();
-  const rows = list.map((c,i) => {
-    const cells = days.map(d => {
-      const m = markOf(c, d);
-      const clickable = !ro() && m !== "V" && m !== "X";
-      return `<td class="cell ${clickable?"":"ro"} ${m==="P"||m==="X"?"":m}"
-        ${clickable?`onclick="openPick(event,${c.id},'${d}')"`:""}>${m==="P"||m==="X"?"":MARK[m]}</td>`;
-    }).join("");
-    return `<tr><td class="num">${i+1}</td><td class="name">${esc(c.full_name)}</td>${cells}</tr>`;
-  }).join("");
-  const totals = days.map(d => `<td>${list.filter(c => markOf(c,d)==="P").length}</td>`).join("");
+  const allGroups = groupsOf(yearKids());
+  const groups = allGroups.filter(g => gfOk(g.key));
+  const shown = groups.flatMap(g => g.kids);
+  const multi = groups.length > 1;
+  const cell = (c, d) => {
+    const m = markOf(c, d);
+    const clickable = !ro() && m !== "V" && m !== "X";
+    return `<td class="cell ${clickable?"":"ro"} ${m==="P"||m==="X"?"":m}"
+      ${clickable?`onclick="openPick(event,${c.id},'${d}')"`:""}>${m==="P"||m==="X"?"":MARK[m]}</td>`;
+  };
+  const presentRow = (kids, label, cls) => `<tr class="${cls}"><td class="num"></td><td class="name">${label}</td>${
+    days.map(d => `<td>${kids.filter(c => markOf(c,d)==="P").length}</td>`).join("")}</tr>`;
+  const body = groups.map(g => `
+    <tr class="grp"><td class="num"></td>
+      <td class="name"><b>${esc(groupTitle(g.name))}</b><span>${kidsWord(g.kids.length)}</span></td>
+      ${days.length ? `<td colspan="${days.length}"></td>` : ""}</tr>
+    ${g.kids.map((c,i) => `<tr><td class="num">${i+1}</td><td class="name" title="${esc(c.full_name)}">${esc(c.full_name)}</td>${
+      days.map(d => cell(c,d)).join("")}</tr>`).join("")}
+    ${multi ? presentRow(g.kids, "Присутніх у групі", "sub") : ""}`).join("");
 
   return `${instPicker()}
   <div class="datebar">
-    <button class="btn" onclick="shiftMonth(-1)">‹</button>
-    <div style="flex:1;text-align:center;font-weight:800;font-size:15px">${monthName(S.vy,S.vm)}</div>
-    <button class="btn" onclick="shiftMonth(1)">›</button>
+    <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
+    <div class="monthname">${monthName(S.vy,S.vm)}</div>
+    <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
+  ${allGroups.length > 1 || S.groupFilter ? `<div class="toolbar">${groupSelect(allGroups)}</div>` : ""}
   ${ro() ? `<span class="viewonly">Лише перегляд</span>` : ""}
   <p class="note">${ro()
     ? "Відділ освіти дані не змінює."
     : "Натисніть клітинку — і виберіть позначку зі списку. Вихідні та святкові дні у сітці не показуються."}</p>
-  ${list.length===0 ? `<div class="card">Список дітей порожній.</div>` : `
+  ${shown.length === 0 ? `<div class="card">${yearKids().length ? "У цій групі дітей немає." : "Список дітей порожній."}</div>` : `
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Прізвище, ім'я, по батькові</th>
       ${days.map(d => `<th>${new Date(d).getDate()}</th>`).join("")}</tr></thead>
-    <tbody>${rows}
-      <tr class="total"><td class="num"></td><td class="name">Присутніх за день</td>${totals}</tr>
+    <tbody>${body}
+      ${presentRow(shown, S.groupFilter ? "Присутніх у групі" : "Присутніх за день", "total")}
     </tbody></table></div>`}
   <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp;
      <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув</p>`;
@@ -693,12 +1049,12 @@ function openPick(ev, id, day){
   const c = S.children.find(x => x.id === id);
   const m = markOf(c, day);
   const opts = [["P","Присутній"],["N","Відсутній"],["H","Хворіє"],["K","За кордоном"]];
-  el("layer").innerHTML = `<div class="backdrop" onclick="closeLayer()"></div>
+  openLayer(`<div class="backdrop" onclick="closeLayer()"></div>
     <div class="popmenu" id="pm">
       <div class="ph">${esc(c.full_name)}<br>${new Date(day).toLocaleDateString("uk-UA",{day:"numeric",month:"long"})}</div>
       ${opts.map(([k,l]) => `<button onclick="pickMark(${id},'${day}','${k}')">
         <b class="${k}">${k==="P"?"✓":MARK[k]}</b>${l}${m===k?" ✓":""}</button>`).join("")}
-    </div>`;
+    </div>`);
   const pm = el("pm"), r = ev.target.getBoundingClientRect(), h = pm.offsetHeight, w = pm.offsetWidth;
   pm.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
   pm.style.top  = (r.bottom + h > innerHeight - 8 ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
@@ -708,40 +1064,82 @@ function pickMark(id, day, k){ closeLayer(); setMark(id, day, k) }
 /* =====================================================================
    Вкладка «Діти»
    ===================================================================== */
+function kidsVisible(){
+  const q = nkey(S.search);
+  return sortedKids().filter(c => gfOk(nkey(c.group_name)) && (!q || nkey(c.full_name).includes(q)));
+}
 function viewKids(){
-  const all = sortedKids();
-  const list = all.filter(c =>
-    (!S.groupFilter || (c.group_name||"") === S.groupFilter) &&
-    (c.full_name||"").toLowerCase().includes(S.search.toLowerCase()));
-  const groups = [...new Set(yearKids().map(c => c.group_name).filter(Boolean))];
-  const th = (k,l,cls="") => `<th class="${cls} sortable ${S.sortKey===k?"act":""}" onclick="sortBy('${k}')">${l}${
+  const all = yearKids(), list = kidsVisible(), groups = groupsOf(all), names = groupNames();
+  const today = todayISO(), sel = ro() ? null : S.sel, grouped = S.sortKey === "group";
+  const active  = all.filter(c => (!c.left_on || c.left_on >= today) && (!c.enrolled_on || c.enrolled_on <= today)).length;
+  const gone    = all.filter(c => c.left_on && c.left_on < today).length;
+  const planned = all.filter(c => c.left_on && c.left_on >= today).length;
+  const th = (k,l,cls="") => `<th class="${cls} sortable${S.sortKey===k?" sorted":""}" onclick="sortBy('${k}')">${l}${
     S.sortKey===k ? (S.sortDir>0?" ↑":" ↓") : ""}</th>`;
   /* клітинка: обрізаний текст + повне значення у підказці при наведенні */
   const td = (v, cls="") => `<td class="${cls}" title="${esc(v||"")}"><span class="cut">${esc(v||"")}</span></td>`;
+  const box = (ids, label) => {
+    const n = ids.filter(id => sel.has(id)).length;
+    return `<input type="checkbox" aria-label="${label}" ${n && n === ids.length ? "checked" : ""} ${n && n < ids.length ? "data-mixed" : ""}
+      onclick="event.stopPropagation();selIds(RV[${rv(ids)}], this.checked)">`;
+  };
+
+  let rows = "", n = 0, last = null;
+  list.forEach(c => {
+    const k = nkey(c.group_name);
+    if(grouped && k !== last){
+      last = k; n = 0;
+      const ids = list.filter(x => nkey(x.group_name) === k).map(x => x.id);
+      rows += `<tr class="grp"><td class="num"></td>
+        ${ro() ? "" : `<td class="act">${sel ? box(ids, "Вибрати всю групу") : ""}</td>`}
+        <td class="name"><b>${esc(groupTitle(k ? names.get(k) : ""))}</b><span>${kidsWord(ids.length)}</span></td>
+        <td colspan="10"></td></tr>`;
+    }
+    n++;
+    const cls = [S.flash.has(c.id) ? "fresh" : "", c.left_on && c.left_on < today ? "gone-row" : "",
+                 sel && sel.has(c.id) ? "picked" : ""].join(" ").trim();
+    rows += `<tr data-child="${c.id}" class="${cls}" ${sel ? `onclick="toggleSel(${c.id})"` : ""}>
+      <td class="num">${n}</td>
+      ${ro() ? "" : `<td class="act">${sel
+        ? `<input type="checkbox" ${sel.has(c.id) ? "checked" : ""} aria-label="Вибрати: ${esc(c.full_name)}"
+             onclick="event.stopPropagation();toggleSel(${c.id})">`
+        : `<button class="mini" title="Редагувати" aria-label="Редагувати: ${esc(c.full_name)}" onclick="childDialog(${c.id})">✎</button>`}</td>`}
+      ${td(c.full_name, "name")}
+      ${td(c.group_name, "w-group")}
+      <td>${c.birth_date ? fmtShort(c.birth_date) : ""}</td>
+      ${td(c.parents, "w-par")}
+      ${td(c.address, "w-adr")}
+      ${td(c.phone, "w-tel")}
+      ${td(c.edu_form, "w-form")}
+      ${td(c.special_status, "w-st")}
+      <td>${c.meal_benefit ? c.meal_benefit + "%" : ""}</td>
+      <td>${c.enrolled_on ? fmtShort(c.enrolled_on) : ""}</td>
+      <td>${c.left_on ? fmtShort(c.left_on) : ""}</td>
+    </tr>`;
+  });
 
   return `${instPicker()}
   <h2 class="title">Діти</h2>
-  <p class="note">${all.filter(c => !c.left_on || c.left_on >= S.curDate).length} у списку ·
-     ${all.filter(c => c.left_on).length} вибуло цього року${ro()?" · лише перегляд":""}.
-     ${ro() ? "" : "Щоб змінити дані, натисніть олівець на початку рядка."}
+  <p class="note">${active} у списку · ${gone} вибуло${planned ? ` · ${planned} з датою вибуття попереду` : ""}${ro() ? " · лише перегляд" : ""}.
+     ${sel ? "Позначте дітей галочками — або цілу групу галочкою в її рядку. Дії з вибраними — внизу екрана."
+           : ro() ? "" : "Щоб змінити дані, натисніть олівець на початку рядка."}
      Сортування — натисніть на заголовок стовпчика.</p>
   <div class="toolbar">
-    <input placeholder="Пошук за прізвищем" value="${esc(S.search)}" oninput="S.search=this.value;rerender()">
-    <select onchange="S.groupFilter=this.value;rerender()">
-      <option value="">Усі групи</option>
-      ${groups.map(g => `<option ${S.groupFilter===g?"selected":""}>${esc(g)}</option>`).join("")}
-    </select>
+    <input id="kidSearch" placeholder="Пошук за прізвищем" aria-label="Пошук за прізвищем"
+           value="${esc(S.search)}" oninput="S.search=this.value;rerender()">
+    ${groupSelect(groups)}
     ${ro() ? "" : `<button class="btn btn-accent" onclick="childDialog(null)">+ Додати дитину</button>
-    <button class="btn" onclick="importDialog()">Імпорт</button>`}
+    <button class="btn" onclick="importDialog()">Імпорт</button>
+    <button class="btn" aria-pressed="${!!sel}" onclick="selMode(${sel ? "false" : "true"})">${sel ? "Закрити вибір" : "Вибрати кількох"}</button>`}
     <button class="btn" onclick="exportKids()">Excel</button>
   </div>
-  ${list.length === 0 ? `<div class="card">${yearKids().length
+  ${list.length === 0 ? `<div class="card">${all.length
       ? "За цим пошуком нікого не знайдено."
       : "Список порожній. Додайте дітей по одній кнопкою «+ Додати дитину» або завантажте весь список кнопкою «Імпорт»."}</div>` : `
   <div class="scroll"><table class="grid">
     <thead><tr>
       <th class="num">№</th>
-      ${ro() ? "" : `<th class="act"></th>`}
+      ${ro() ? "" : `<th class="act">${sel ? box(list.map(c => c.id), "Вибрати всіх у списку") : ""}</th>`}
       ${th("name","Прізвище, ім'я, по батькові","name")}
       ${th("group","Група","w-group")}
       ${th("birth","Дата народж.")}
@@ -754,27 +1152,115 @@ function viewKids(){
       <th>Зараховано</th>
       <th>Вибуття</th>
     </tr></thead>
-    <tbody>
-      ${list.map((c,i) => `<tr data-child="${c.id}" class="${S.highlight===c.id?"fresh":""} ${c.left_on?"gone-row":""}">
-        <td class="num">${i+1}</td>
-        ${ro() ? "" : `<td class="act"><button class="mini" title="Редагувати" onclick="childDialog(${c.id})">✎</button></td>`}
-        ${td(c.full_name, "name")}
-        ${td(c.group_name, "w-group")}
-        <td>${c.birth_date ? fmtShort(c.birth_date) : ""}</td>
-        ${td(c.parents, "w-par")}
-        ${td(c.address, "w-adr")}
-        ${td(c.phone, "w-tel")}
-        ${td(c.edu_form, "w-form")}
-        ${td(c.special_status, "w-st")}
-        <td>${c.meal_benefit ? c.meal_benefit + "%" : ""}</td>
-        <td>${c.enrolled_on ? fmtShort(c.enrolled_on) : ""}</td>
-        <td>${c.left_on ? fmtShort(c.left_on) : ""}</td>
-      </tr>`).join("")}
-      ${ro() ? "" : `<tr class="addrow"><td class="num"></td><td class="name" colspan="12">
+    <tbody>${rows}
+      ${ro() || sel ? "" : `<tr class="addrow"><td class="num"></td><td class="name" colspan="12">
         <button onclick="childDialog(null)">+ Додати дитину</button></td></tr>`}
     </tbody></table></div>`}
   <p class="legend">Наведіть курсор на клітинку — побачите повний текст.
-     Дата вибуття закриває дитину: з наступного дня в сітці «виб», історія відвідування зберігається.</p>`;
+     Дата вибуття закриває дитину: з наступного дня в сітці «виб», історія відвідування зберігається.</p>
+  ${sel ? selBar(list) : ""}`;
+}
+
+/* ---------- Вибір кількох дітей: вибуття і переведення групою ---------- */
+function selMode(on){ S.sel = on ? new Set() : null; rerender() }
+function toggleSel(id){ if(!S.sel) return; S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id); rerender() }
+function selIds(ids, on){ if(!S.sel) return; ids.forEach(id => on ? S.sel.add(id) : S.sel.delete(id)); rerender() }
+function selectedKids(){ return S.children.filter(c => S.sel && S.sel.has(c.id)) }
+function selBar(visible){
+  const n = S.sel.size;
+  return `<div class="selbar" role="region" aria-label="Дії з вибраними дітьми"><div class="selin">
+    <div class="selinfo"><b>Вибрано: ${n}</b>
+      ${visible.length ? `<button class="linkbtn" onclick="selIds(RV[${rv(visible.map(c => c.id))}], true)">Вибрати всіх</button>` : ""}
+      ${n ? `<button class="linkbtn" onclick="selIds(RV[${rv([...S.sel])}], false)">Зняти</button>` : ""}
+    </div>
+    <button class="selx" aria-label="Закрити вибір" title="Закрити вибір" onclick="selMode(false)">✕</button>
+    <div class="selact">
+      <button class="btn btn-accent" ${n ? "" : "disabled"} onclick="bulkLeaveDialog()">Вибуття…</button>
+      <button class="btn" ${n ? "" : "disabled"} onclick="bulkGroupDialog()">Перевести в групу…</button>
+    </div>
+  </div></div>`;
+}
+function groupSummary(kids){
+  return groupsOf(kids).map(g => `${esc(groupTitle(g.name))}: ${g.kids.length}`).join(", ");
+}
+function bulkLeaveDialog(){
+  RL = [];
+  const kids = selectedKids(), y = curYear();
+  const withDate = kids.filter(c => c.left_on).length;
+  openLayer(`
+  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
+    <h3>Вибуття: ${kidsWord(kids.length)}</h3>
+    <p class="hint" style="margin-top:0">${groupSummary(kids)}</p>
+    <div class="field"><label for="bl_date">Дата вибуття — останній день у закладі</label>
+      <input id="bl_date" type="date" value="${y ? y.ends_on : todayISO()}"></div>
+    <div class="chips">
+      ${y ? `<button type="button" class="chip" onclick="setField('bl_date','${y.ends_on}')">Кінець року, ${fmtShort(y.ends_on)}</button>` : ""}
+      <button type="button" class="chip" onclick="setField('bl_date','${todayISO()}')">Сьогодні</button>
+    </div>
+    <p class="hint">З наступного дня діти в сітці позначені «виб», історія відвідування зберігається.
+      ${withDate ? `У ${withDate} з вибраних дата вибуття вже стоїть — її буде замінено.` : ""}</p>
+    <button class="btn-main" onclick="bulkLeave(false)">Поставити вибуття</button>
+    ${withDate ? `<button class="btn" style="width:100%;margin-top:7px" onclick="bulkLeave(true)">Зняти дату вибуття (${withDate})</button>` : ""}
+    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
+  </div></div>`);
+}
+async function bulkLeave(clear){
+  if(S.saving) return;
+  const kids = selectedKids();
+  const day = clear ? null : el("bl_date").value;
+  if(!clear && !day) return toast("Оберіть дату вибуття", true);
+  if(!clear){
+    const early = kids.filter(c => c.enrolled_on && c.enrolled_on > day);
+    if(early.length) return toast(`${early.slice(0,2).map(c => c.full_name).join(", ")}${early.length > 2 ? " та ще " + (early.length - 2) : ""}: зараховано пізніше за ${fmtShort(day)}`, true, 5000);
+  }
+  const ids = (clear ? kids.filter(c => c.left_on) : kids).map(c => c.id);
+  if(!ids.length) return closeLayer();
+  S.saving = true;
+  try{
+    const { data, error } = await sb.from("children").update({ left_on: day }).in("id", ids).select();
+    if(error) throw error;
+    mergeKids(data);
+    S.flash = new Set(ids); S.sel = null;
+    closeLayer(); rerender(); scrollToFlash();
+    toast(clear ? `Дату вибуття знято: ${kidsWord((data || []).length)}`
+                : `Вибуття поставлено: ${kidsWord((data || []).length)}`, false, 2600);
+  }catch(e){ fail(e) }
+  finally{ S.saving = false }
+}
+function bulkGroupDialog(){
+  RL = [];
+  const kids = selectedKids();
+  const names = groupsOf(S.children).filter(g => g.key).map(g => g.name);
+  openLayer(`
+  <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
+    <h3>Перевести в групу: ${kidsWord(kids.length)}</h3>
+    <p class="hint" style="margin-top:0">Зараз: ${groupSummary(kids)}</p>
+    <div class="field"><label for="bg_name">Нова група</label>
+      <input id="bg_name" autocomplete="off" placeholder="напр. старша"></div>
+    <div class="chips">${names.map(g => `<button type="button" class="chip" onclick="setField('bg_name', RL[${rl(g)}])">${esc(g)}</button>`).join("")}</div>
+    <p class="hint">Так само можна виправити назву групи, вписану з помилкою: виберіть цілу групу
+      і переведіть у правильну. Окремої історії груп система не веде, тому в минулих місяцях
+      діти теж показуватимуться в новій групі — переводьте на початку навчального року.</p>
+    <button class="btn-main" onclick="bulkGroup()">Перевести</button>
+    <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
+  </div></div>`);
+  setTimeout(() => el("bg_name") && el("bg_name").focus(), 50);
+}
+async function bulkGroup(){
+  if(S.saving) return;
+  const name = canonGroup(el("bg_name").value);
+  if(!name) return toast("Впишіть назву групи", true);
+  const ids = selectedKids().map(c => c.id);
+  S.saving = true;
+  try{
+    const { data, error } = await sb.from("children").update({ group_name: name }).in("id", ids).select();
+    if(error) throw error;
+    mergeKids(data);
+    S.flash = new Set(ids); S.sel = null;
+    closeLayer(); rerender(); scrollToFlash();
+    toast(`Переведено в «${name}»: ${kidsWord((data || []).length)}`, false, 2600);
+  }catch(e){ fail(e) }
+  finally{ S.saving = false }
 }
 
 /* =====================================================================
@@ -794,19 +1280,20 @@ function monthStats(){
   const byF = {}, byS = {};
   act.forEach(c => { byF[c.edu_form] = (byF[c.edu_form]||0)+1; if(c.special_status) byS[c.special_status] = (byS[c.special_status]||0)+1 });
   return { days: days.length, pct: slots ? Math.round(present/slots*100) : 0, N, H, K,
-    all: list.length, out: list.filter(c => c.left_on).length, act: act.length,
+    all: list.length, out: list.filter(c => c.left_on && c.left_on < S.curDate).length, act: act.length,
     b50: act.filter(c => c.meal_benefit === "50").length,
     b100: act.filter(c => c.meal_benefit === "100").length, byF, byS };
 }
 function viewReport(){
   const r = monthStats();
+  const other = Object.keys(r.byS).filter(s => !STATUSES_REF.includes(s));
   return `${instPicker()}
   <h2 class="title">Звіт</h2>
   <p class="note">${esc(instName(S.instId))} · ${monthName(S.vy,S.vm)} · ${esc(curYear()?.name||"")} н.р.</p>
   <div class="datebar">
-    <button class="btn" onclick="shiftMonth(-1)">‹</button>
-    <div style="flex:1;text-align:center;font-weight:700">${monthName(S.vy,S.vm)}</div>
-    <button class="btn" onclick="shiftMonth(1)">›</button>
+    <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
+    <div class="monthname">${monthName(S.vy,S.vm)}</div>
+    <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
   <div class="card"><h3>Кількість дітей</h3>
     <div class="kv"><span>Всього у базі закладу</span><b>${r.all}</b></div>
@@ -821,12 +1308,12 @@ function viewReport(){
   <div class="card"><h3>Форма здобуття дошкільної освіти</h3>
     ${FORMS.map(f => `<div class="kv"><span>${f}</span><b>${r.byF[f]||0}</b></div>`).join("")}</div>
   <div class="card"><h3>Спеціальний статус</h3>
-    ${STATUSES_REF.filter(s => r.byS[s]).map(s => `<div class="kv"><span>${s}</span><b>${r.byS[s]}</b></div>`).join("")
+    ${STATUSES_REF.concat(other).filter(s => r.byS[s]).map(s => `<div class="kv"><span>${esc(s)}</span><b>${r.byS[s]}</b></div>`).join("")
       || `<div class="kv"><span>Дітей зі статусом немає</span><b>0</b></div>`}</div>
   <div class="card"><h3>Пільги на харчування</h3>
     <div class="kv"><span>50%</span><b>${r.b50}</b></div>
     <div class="kv"><span>100%</span><b>${r.b100}</b></div></div>
-  <button class="btn-main" onclick="exportReport()">Вивантажити в Excel</button>`;
+  <button class="btn-main" onclick="exportReport()">Вивантажити сітку місяця в Excel</button>`;
 }
 
 /* =====================================================================
@@ -834,83 +1321,110 @@ function viewReport(){
    ===================================================================== */
 function viewCommunity(){
   const rows = S.community || [];
-  const total = rows.reduce((s,r) => s + Number(r.kids), 0);
-  const present = rows.reduce((s,r) => s + Number(r.present), 0);
+  const work = rows.filter(r => r.is_work !== false);
+  const total = work.reduce((s,r) => s + Number(r.kids), 0);
+  const present = work.reduce((s,r) => s + Number(r.present), 0);
   const avg = total ? Math.round(present / total * 100) : 0;
-  const holiday = !isWork(S.curDate);
+  const future = S.curDate > todayISO(), weekend = isWeekend(S.curDate);
+  const confN = work.filter(r => r.confirmed).length;
   return `
   <div class="datebar">
-    <button class="btn" onclick="shiftDay(-1)">‹</button>
-    <input type="date" value="${S.curDate}" onchange="setDateReload(this.value)">
+    <button class="btn" onclick="shiftDay(-1)" aria-label="Попередній день">‹</button>
+    <input type="date" value="${S.curDate}" onchange="setDateReload(this.value)" aria-label="Дата">
+    <button class="btn" onclick="shiftDay(1)" aria-label="Наступний день">›</button>
     <button class="btn" onclick="setDateReload('${todayISO()}')">Сьогодні</button>
   </div>
   <h2 class="title">${fmtLong(S.curDate)}</h2>
-  <p class="note">${holiday
-    ? "Неробочий день — відвідування не рахується."
-    : "Загальна картина по громаді. Натисніть на заклад, щоб відкрити його сітку за місяць."}</p>
+  <p class="note">${weekend
+    ? "Вихідний день — відвідування не рахується."
+    : "Натисніть на заклад, щоб відкрити його сітку за місяць. «Підтверджено» означає, що заклад натиснув «Підтвердити день»; без цього 100% може означати, що дані просто не внесли."}</p>
   <div class="summary">
     <div class="sum"><b>${total}</b><span>дітей у громаді</span></div>
     <div class="sum ok"><b>${present}</b><span>присутні</span></div>
     <div class="sum no"><b>${total - present}</b><span>відсутні</span></div>
     <div class="sum"><b>${avg}%</b><span>відвідування</span></div>
+    ${future || weekend ? "" : `<div class="sum"><b>${confN} з ${work.length}</b><span>підтвердили день</span></div>`}
   </div>
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Заклад</th>
-      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th></tr></thead>
+      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th><th>Підтверджено</th></tr></thead>
     <tbody>${rows.map((r,i) => {
-      const pct = r.kids ? Math.round(r.present / r.kids * 100) : 0;
+      const isW = r.is_work !== false;
+      const pct = r.kids ? Math.round(r.present / r.kids * 100) : null;
+      const conf = !isW || future ? `<td class="muted">—</td>`
+        : r.confirmed ? `<td class="okmark">✓${r.confirmed_at ? " " + fmtTime(r.confirmed_at) : ""}</td>`
+        : `<td class="nomark">ні</td>`;
       return `<tr class="clickable" onclick="openInst(${r.institution_id})">
         <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td>
-        <td>${r.kids}</td><td>${r.present}</td><td>${r.kids - r.present}</td>
-        <td class="pct ${pct<70?"low":""}">${r.kids ? pct+"%" : "—"}</td>
+        <td>${r.kids}</td>
+        ${isW ? `<td>${r.present}</td><td>${r.kids - r.present}</td>
+          <td class="pct ${pct !== null && pct < 70 ? "low" : ""}">${pct === null ? "—" : pct + "%"}</td>`
+          : `<td colspan="3" class="muted">неробочий день</td>`}
+        ${conf}
       </tr>`}).join("")}
       <tr class="total"><td class="num"></td><td class="name">Разом по громаді</td>
-        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td></tr>
+        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td>
+        <td>${future || weekend ? "" : confN + " з " + work.length}</td></tr>
     </tbody></table></div>`;
 }
 function setDateReload(v){ if(!v) return; S.curDate = v; const d = new Date(v); S.vy = d.getFullYear(); S.vm = d.getMonth(); reload() }
-function openInst(id){ S.instId = id; S.tab = "month"; renderTabs(); window.scrollTo(0,0); reload() }
+function openInst(id){
+  S.instId = id; S.groupFilter = ""; S.sel = null; S.tab = "month";
+  renderTabs(); window.scrollTo(0,0); reload();
+}
 
-function viewSummary(){
+/* Відсоток кожного закладу рахує база — за його власними робочими днями
+   і лише за ті дні, коли дитина була в списку. Середнє по громаді — зважене. */
+function summaryCalc(){
   const rows = S.summary || [];
-  const days = workDays(S.vy, S.vm).filter(d => d <= todayISO()).length;
-  const sum = f => rows.reduce((s,r) => s + Number(r[f]), 0);
-  const pctOf = r => { const slots = Number(r.kids) * days; return slots ? Math.round((slots - (Number(r.n)+Number(r.h)+Number(r.k)))/slots*100) : 0 };
-  const avg = rows.length ? Math.round(rows.reduce((s,r) => s + pctOf(r), 0) / rows.length) : 0;
+  const oldDays = workDays(S.vy, S.vm).filter(d => d <= todayISO()).length;   // запас для старої версії функції
+  const abs = r => Number(r.n) + Number(r.h) + Number(r.k);
+  const slots = r => r.slots != null ? Number(r.slots) : Number(r.kids) * oldDays;
+  const pct = r => slots(r) ? Math.round((slots(r) - abs(r)) / slots(r) * 100) : null;
+  const S1 = rows.reduce((s,r) => s + slots(r), 0), A1 = rows.reduce((s,r) => s + abs(r), 0);
+  return { rows, abs, pct, avg: S1 ? Math.round((S1 - A1) / S1 * 100) : 0 };
+}
+function viewSummary(){
+  const { rows, pct, avg } = summaryCalc();
+  const sum = f => rows.reduce((s,r) => s + Number(r[f] || 0), 0);
+  const conf = r => r.work_days == null ? "—" : `${r.conf_days} з ${r.work_days}`;
   return `
   <div class="datebar">
-    <button class="btn" onclick="shiftMonth(-1)">‹</button>
-    <div style="flex:1;text-align:center;font-weight:800;font-size:15px">${monthName(S.vy,S.vm)}</div>
-    <button class="btn" onclick="shiftMonth(1)">›</button>
+    <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
+    <div class="monthname">${monthName(S.vy,S.vm)}</div>
+    <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
   <h2 class="title">Звіт по громаді</h2>
-  <p class="note">${esc(curYear()?.name||"")} н.р. · робочих днів у місяці пройшло: ${days}</p>
+  <p class="note">Відсоток кожного закладу рахується за його власними робочими днями, що вже минули.
+    «Підтверджено» — скільки робочих днів заклад підтвердив.</p>
   <div class="summary">
     <div class="sum"><b>${sum("kids")}</b><span>дітей</span></div>
     <div class="sum ok"><b>${avg}%</b><span>середнє</span></div>
     <div class="sum no"><b>${sum("n")+sum("h")+sum("k")}</b><span>пропусків</span></div>
   </div>
   <div class="scroll"><table>
-    <thead><tr><th class="num">№</th><th class="name">Заклад</th><th>Дітей</th><th>%</th>
-      <th>н</th><th>хв</th><th>кор</th><th>Пільга 50%</th><th>Пільга 100%</th><th>Вибуло</th></tr></thead>
-    <tbody>${rows.map((r,i) => `<tr>
+    <thead><tr><th class="num">№</th><th class="name">Заклад</th><th>Дітей</th><th>Роб. днів</th><th>%</th>
+      <th>н</th><th>хв</th><th>кор</th><th>Пільга 50%</th><th>Пільга 100%</th><th>Вибули</th><th>Підтверджено</th></tr></thead>
+    <tbody>${rows.map((r,i) => { const p = pct(r); return `<tr>
       <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td><td>${r.kids}</td>
-      <td class="pct ${pctOf(r)<70?"low":""}">${pctOf(r)}%</td>
+      <td>${r.work_days ?? "—"}</td>
+      <td class="pct ${p !== null && p < 70 ? "low" : ""}">${p === null ? "—" : p + "%"}</td>
       <td>${r.n}</td><td>${r.h}</td><td>${r.k}</td><td>${r.ben50}</td><td>${r.ben100}</td><td>${r.gone}</td>
-    </tr>`).join("")}
-      <tr class="total"><td class="num"></td><td class="name">Разом</td><td>${sum("kids")}</td><td>${avg}%</td>
+      <td class="${r.work_days != null && Number(r.conf_days) < Number(r.work_days) ? "nomark" : ""}">${conf(r)}</td>
+    </tr>` }).join("")}
+      <tr class="total"><td class="num"></td><td class="name">Разом</td><td>${sum("kids")}</td><td></td><td>${avg}%</td>
         <td>${sum("n")}</td><td>${sum("h")}</td><td>${sum("k")}</td>
-        <td>${sum("ben50")}</td><td>${sum("ben100")}</td><td>${sum("gone")}</td></tr>
+        <td>${sum("ben50")}</td><td>${sum("ben100")}</td><td>${sum("gone")}</td><td></td></tr>
     </tbody></table></div>
   <button class="btn-main" style="margin-top:11px" onclick="exportSummary()">Вивантажити в Excel</button>`;
 }
 
 /* =====================================================================
-   Налаштування (адміністратор): навчальні роки та неробочі дні
+   Налаштування: навчальні роки та неробочі дні
    ===================================================================== */
 function viewSettings(){
   const y = curYear();
-  const hol = [...S.holidays].filter(d => !y || (d >= y.starts_on && d <= y.ends_on)).sort();
+  const hol = [...S.holidays].filter(d => !y || (d >= y.starts_on && d <= yearEnd(y))).sort();
   return `${instPicker()}
   <h2 class="title">Роки і неробочі дні</h2>
   <p class="note">${ro()
@@ -932,6 +1446,7 @@ function viewSettings(){
     <p class="hint" style="margin-bottom:0">Списки дітей переносяться самі: дитина без дати вибуття
       з'являється в новому році, а та, що вибула торік, у новий рік уже не потрапляє —
       але в старому році лишається разом з усією історією відвідування.
+      Літо після кінця року (до 31 серпня) рахується до цього ж року.
       Перемикати роки можна тут або списком у шапці.</p>
   </div>
 
@@ -942,39 +1457,44 @@ function viewSettings(){
     ${hol.length ? hol.map(d => `
       <div class="setrow">
         <div class="setinfo"><b>${fmtShort(d)}</b><small>${esc(S.holidayTitles[d] || "")}</small></div>
-        ${ro() ? "" : `<button class="mini" onclick="delHoliday('${d}')">✕</button>`}
+        ${ro() ? "" : `<button class="mini" aria-label="Видалити ${fmtShort(d)}" onclick="delHoliday('${d}')">✕</button>`}
       </div>`).join("") : `<p class="hint">Поки що не додано жодного дня.</p>`}
     ${ro() ? "" : `<div class="toolbar" style="margin:10px 0 0">
-      <input id="hol_day" type="date" style="flex:0 0 150px">
-      <input id="hol_title" placeholder="Назва, напр. Різдво">
+      <input id="hol_day" type="date" style="flex:0 0 150px" aria-label="Дата">
+      <input id="hol_title" placeholder="Назва, напр. Різдво" aria-label="Назва">
       <button class="btn btn-accent" onclick="addHoliday()">Додати</button>
     </div>`}
   </div>`;
 }
 
 function yearDialog(id){
+  RL = [];
   const y = id ? S.years.find(x => x.id === id) : null;
-  const n = new Date().getFullYear();
-  el("layer").innerHTML = `
+  const last = S.years[S.years.length - 1], now = new Date();
+  /* новий рік пропонуємо одразу після останнього наявного */
+  const n = last ? +last.starts_on.slice(0,4) + 1 : (now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1);
+  const cur = y ? y.is_current : `${n}-09-01` <= todayISO();
+  openLayer(`
   <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box">
     <h3>${y ? "Навчальний рік" : "Новий навчальний рік"}</h3>
     <p class="hint" style="margin-top:0">Заклад: <b>${esc(instName(S.instId))}</b></p>
-    <div class="field"><label>Назва</label>
+    <div class="field"><label for="ny_name">Назва</label>
       <input id="ny_name" value="${esc(y ? y.name : n + "/" + (n+1))}"></div>
-    <div class="field"><label>Початок</label>
+    <div class="field"><label for="ny_s">Початок</label>
       <input id="ny_s" type="date" value="${y ? y.starts_on : n + "-09-01"}"></div>
-    <div class="field"><label>Кінець</label>
+    <div class="field"><label for="ny_e">Кінець</label>
       <input id="ny_e" type="date" value="${y ? y.ends_on : (n+1) + "-05-31"}"></div>
-    <label class="checkline"><input id="ny_cur" type="checkbox" ${!y || y.is_current ? "checked" : ""}>
+    <label class="checkline"><input id="ny_cur" type="checkbox" ${cur ? "checked" : ""}>
       Зробити поточним</label>
     <p class="hint">Діти нікуди не копіюються: у рік потрапляють усі, хто перебував у закладі
-      в межах цих дат. Вибулі раніше — не потрапляють.</p>
+      в межах цих дат. Вибулі раніше — не потрапляють. Літо після кінця року
+      (до 31 серпня) теж належить цьому року, тож кінець можна лишати 31 травня.</p>
     <button class="btn-main" onclick="saveYear(${id || "null"})">Зберегти</button>
     <button class="btn" style="width:100%;margin-top:7px" onclick="closeLayer()">Скасувати</button>
     ${y && S.years.length > 1 ? `<button class="btn btn-danger" style="width:100%;margin-top:14px"
       onclick="deleteYear(${id})">Видалити рік</button>` : ""}
-  </div></div>`;
-  setTimeout(() => el("ny_name").focus(), 50);
+  </div></div>`);
+  setTimeout(() => el("ny_name") && el("ny_name").focus(), 50);
 }
 
 async function saveYear(id){
@@ -1004,7 +1524,7 @@ async function saveYear(id){
     S.yearId = row.id;
     const st = new Date(row.starts_on);
     S.vy = st.getFullYear(); S.vm = st.getMonth();
-    if(S.curDate < row.starts_on || S.curDate > row.ends_on) S.curDate = row.starts_on;
+    if(S.curDate < row.starts_on || S.curDate > yearEnd(row)) S.curDate = row.starts_on;
     closeLayer(); renderYears(); reload(); toast("Збережено: " + name);
   }catch(e){ fail(e) }
 }
@@ -1059,21 +1579,29 @@ function exportKids(){
     c.address, c.phone, c.edu_form, c.special_status, c.meal_benefit, c.enrolled_on, c.left_on]);
   download(`dity-${instName(S.instId)}.csv`, [head, ...rows]);
 }
+/* Сітка місяця: групи окремими блоками, як на екрані */
 function exportReport(){
   const days = workDays(S.vy, S.vm);
-  const head = ["№","Прізвище, ім'я, по батькові", ...days.map(d => new Date(d).getDate()), "Присутніх днів"];
-  const rows = sortedKids().map((c,i) => {
-    const cells = days.map(d => { const m = markOf(c,d); return m==="P"||m==="X" ? "" : MARK[m] });
-    return [i+1, c.full_name, ...cells, days.filter(d => markOf(c,d)==="P").length];
+  const groups = groupsOf(yearKids());
+  const presentRow = (kids, label) => ["", label, ...days.map(d => kids.filter(c => markOf(c,d)==="P").length), ""];
+  const out = [["№","Прізвище, ім'я, по батькові", ...days.map(d => new Date(d).getDate()), "Присутніх днів"]];
+  groups.forEach(g => {
+    out.push(["", groupTitle(g.name)]);
+    g.kids.forEach((c,i) => out.push([i+1, c.full_name,
+      ...days.map(d => { const m = markOf(c,d); return m==="P"||m==="X" ? "" : MARK[m] }),
+      days.filter(d => markOf(c,d)==="P").length]));
+    if(groups.length > 1) out.push(presentRow(g.kids, "Присутніх у групі"));
   });
-  const tot = ["","Присутніх за день", ...days.map(d => yearKids().filter(c => markOf(c,d)==="P").length), ""];
-  download(`vidviduvannia-${monthName(S.vy,S.vm)}.csv`, [head, ...rows, tot]);
+  out.push(presentRow(groups.flatMap(g => g.kids), "Присутніх за день"));
+  download(`vidviduvannia-${instName(S.instId)}-${monthName(S.vy,S.vm)}.csv`, out);
 }
 function exportSummary(){
-  const rows = S.summary || [];
-  const head = ["№","Заклад","Дітей","н","хв","кор","Пільга 50%","Пільга 100%","Вибуло"];
+  const { rows, pct } = summaryCalc();
+  const head = ["№","Заклад","Дітей","Робочих днів","% відвідування","н","хв","кор",
+    "Пільга 50%","Пільга 100%","Вибули за місяць","Підтверджено днів"];
   download(`zvit-gromady-${monthName(S.vy,S.vm)}.csv`,
-    [head, ...rows.map((r,i) => [i+1, r.name, r.kids, r.n, r.h, r.k, r.ben50, r.ben100, r.gone])]);
+    [head, ...rows.map((r,i) => [i+1, r.name, r.kids, r.work_days ?? "", pct(r) ?? "",
+      r.n, r.h, r.k, r.ben50, r.ben100, r.gone, r.conf_days ?? ""])]);
 }
 
 /* =====================================================================
