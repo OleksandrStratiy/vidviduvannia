@@ -6,7 +6,7 @@
   --sick:#a06a0c;   --sick-bg:#fbf1dc;
   --away:#2a5d94;   --away-bg:#e5edf7;
   --gone:#7b8280;   --gone-bg:#eceeed;
-  --r:12px;
+  --r:12px; --hdr:96px;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -60,6 +60,7 @@ p.note{margin:0 0 12px;color:var(--ink-soft);font-size:12.5px}
 
 .datebar{display:flex;align-items:center;gap:7px;margin-bottom:11px}
 .datebar input[type=date]{flex:1;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14.5px;min-width:0}
+.monthname{flex:1;text-align:center;font-weight:800;font-size:15px}
 .instsel{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;margin-bottom:11px;font-weight:600}
 .summary{display:flex;gap:7px;margin-bottom:12px;flex-wrap:wrap}
 .summary .sum{min-width:70px}
@@ -69,7 +70,6 @@ p.note{margin:0 0 12px;color:var(--ink-soft);font-size:12.5px}
 .sum.ok b{color:var(--brand)} .sum.no b{color:var(--absent)}
 
 /* ---------- Сьогодні ---------- */
-.grouprow{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--ink-soft);background:var(--paper);padding:9px 4px 5px;position:sticky;top:96px;z-index:5}
 .list{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .prow{display:flex;align-items:center;gap:8px;padding:0 9px;height:42px;border-bottom:1px solid var(--line-soft)}
 .prow:last-child{border-bottom:0}
@@ -96,7 +96,7 @@ table{border-collapse:separate;border-spacing:0;font-size:12.5px;width:100%}
 th,td{border-bottom:1px solid var(--line-soft);border-right:1px solid var(--line-soft);padding:0 6px;height:32px;text-align:center;white-space:nowrap}
 th{font-weight:700;font-size:11px;color:var(--ink-soft);position:sticky;top:0;background:var(--card);z-index:4;box-shadow:0 1px 0 var(--line)}
 th.sortable{cursor:pointer}
-th.sortable.act{color:var(--brand)}
+th.sortable.sorted{color:var(--brand)}
 td.name,th.name{text-align:left;position:sticky;background:var(--card);font-weight:600}
 td.num,th.num{position:sticky;left:0;width:32px;min-width:32px;background:var(--card);color:var(--ink-soft);font-size:11px;z-index:3}
 th.num{z-index:6}
@@ -185,15 +185,94 @@ tr.fresh td.num,tr.fresh td.name{background:var(--brand-soft)}
 .checkline{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;margin:4px 0 2px}
 .checkline input{width:18px;height:18px;accent-color:var(--brand)}
 
+/* ---------- Сьогодні: групи, що згортаються ---------- */
+.gtools{display:flex;justify-content:flex-end;margin:-4px 0 4px}
+.linkbtn{border:0;background:none;padding:6px 2px;color:var(--brand);font-weight:700;font-size:12.5px;text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+.gcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);margin-bottom:8px}
+.gcard.open{border-color:#c6dacf}
+.ghead{display:flex;align-items:center;gap:9px;width:100%;min-height:48px;border:0;background:var(--card);padding:8px 12px;text-align:left;border-radius:var(--r)}
+.gcard.open .ghead{position:sticky;top:var(--hdr);z-index:5;border-radius:var(--r) var(--r) 0 0;border-bottom:1px solid var(--line)}
+.ghead:hover .gname{color:var(--brand)}
+.chev{width:8px;height:8px;flex:none;margin:0 4px 0 2px;border-right:2px solid var(--ink-soft);border-bottom:2px solid var(--ink-soft);transform:rotate(-45deg);transition:transform .15s}
+.gcard.open .chev{transform:rotate(45deg) translate(-2px,-2px);border-color:var(--brand)}
+.gname{flex:1;min-width:0;font-size:15px;font-weight:800;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gbadges{display:flex;gap:4px;flex:none}
+.gbadges i{font-style:normal;font-size:11px;font-weight:700;color:#fff;padding:2px 6px;border-radius:6px}
+.gbadges i.N{background:var(--absent)} .gbadges i.H{background:var(--sick)} .gbadges i.K{background:var(--away)}
+.gcount{flex:none;font-size:12.5px;color:var(--ink-soft);font-weight:600;min-width:52px;text-align:right}
+.gcount b{color:var(--brand);font-size:15px;font-weight:800}
+.gcard .list{border:0;border-radius:0 0 var(--r) var(--r)}
+
+/* ---------- Підтвердження дня: панель унизу «Сьогодні» ---------- */
+.confdock{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -8px 22px rgba(20,40,35,.09);padding:9px 14px calc(9px + env(safe-area-inset-bottom))}
+.confdock.done{background:var(--brand-soft);border-top-color:#cfe3d7;box-shadow:none}
+.confin{max-width:1040px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.ctext{flex:1;min-width:0;font-size:13.5px;line-height:1.35}
+.ctext b{display:block;font-weight:800}
+.ctext small{display:block;font-size:11.5px;color:var(--ink-soft)}
+.confdock.done .ctext b{color:var(--brand)}
+.confdock .btn{white-space:nowrap;padding:11px 16px;flex:none}
+body.docked main{padding-bottom:84px}
+body.docked footer.credit{padding-bottom:96px}
+body.docked .toast{bottom:88px}
+
+/* ---------- Групи в таблицях ---------- */
+tr.grp td{height:30px;background:var(--brand-soft);border-top:2px solid var(--brand);border-bottom-color:#cfe2d7}
+tr.grp td.num,tr.grp td.name,tr.grp td.act{background:var(--brand-soft)}
+tr.grp td.name{overflow:visible}
+tr.grp td.name b{font-weight:800;color:var(--brand);font-size:12.5px}
+tr.grp td.name span{margin-left:9px;font-weight:600;font-size:11px;color:var(--ink-soft)}
+table.grid tr.grp td{height:30px}
+table.grid tbody tr.grp:hover td{background:var(--brand-soft)}
+tr.sub td{background:var(--paper);font-weight:700;font-size:11.5px;color:var(--ink-soft)}
+tr.sub td.num,tr.sub td.name{background:var(--paper)}
+.grpsel{padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:14px;font-weight:600;max-width:100%}
+
+/* ---------- Вибір кількох дітей ---------- */
+.btn[aria-pressed="true"]{background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+table.grid td.act input,table.grid th.act input{width:18px;height:18px;margin:0;vertical-align:middle;accent-color:var(--brand);cursor:pointer}
+body.selecting table.grid tbody tr:not(.grp){cursor:pointer}
+table.grid tbody tr.picked td{background:#eaf4ee}
+table.grid tbody tr.picked td.num,table.grid tbody tr.picked td.act,table.grid tbody tr.picked td.name{background:#dcede3}
+.selbar{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -8px 22px rgba(20,40,35,.09);padding:8px 14px calc(10px + env(safe-area-inset-bottom))}
+.selin{max-width:1040px;margin:0 auto;display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}
+.selinfo{flex:1 1 auto;order:1;display:flex;align-items:center;gap:2px 14px;flex-wrap:wrap;font-size:14px}
+.selinfo b{font-weight:800}
+.selx{order:2;flex:none;width:36px;height:36px;border:1px solid var(--line);background:var(--card);border-radius:10px;font-size:14px;color:var(--ink-soft)}
+.selact{order:3;flex:1 1 100%;display:flex;gap:7px}
+.selact .btn{flex:1 1 0;white-space:nowrap;padding:11px 10px}
+@media(min-width:700px){
+  .selact{order:2;flex:none}
+  .selact .btn{flex:none;padding:9px 16px}
+  .selx{order:3}
+}
+body.selecting main{padding-bottom:120px}
+body.selecting footer.credit{padding-bottom:130px}
+body.selecting .toast{bottom:118px}
+
+/* ---------- Громада ---------- */
+td.okmark{color:var(--brand);font-weight:800}
+td.nomark,.nomark{color:var(--absent);font-weight:700}
+td.muted{color:var(--ink-soft);font-weight:500;font-size:11.5px}
+
+/* ---------- Фокус і рух ---------- */
+button:focus-visible,.chip:focus-visible,input[type=checkbox]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
+
 @media(max-width:430px){
-  .grouprow{top:92px}
-  .prow{height:40px;gap:6px;padding:0 7px}
+    .prow{height:40px;gap:6px;padding:0 7px}
   .mark{width:36px;height:28px}
   .toolbar input{flex:1 1 100%}
   .yearsel{max-width:96px;padding:7px 5px}
+  .ghead{padding:8px 10px;gap:7px}
+  .gname{font-size:14.5px}
+  .gcount{min-width:44px}
+  .toolbar .grpsel{flex:1 1 100%}
 }
 @media print{
-  header.top,.tabs,.toolbar,.datebar,.btn,.btn-main,footer.credit{display:none!important}
+  header.top,.tabs,.toolbar,.datebar,.btn,.btn-main,footer.credit,.selbar,.confdock,.gtools{display:none!important}
   .scroll{max-height:none;border:0}
   body{background:#fff}
 }
