@@ -302,8 +302,9 @@ function childDialog(id){
       input = `<select id="cf_${f}">${["<option value=\"\"></option>"]
         .concat(extra.map(o => `<option ${val(f)===o?"selected":""}>${esc(o)}</option>`)).join("")}</select>`;
     }else if(type === "group"){
-      input = `<input id="cf_${f}" list="gr_dlg" autocomplete="off" value="${v}" placeholder="${esc(extra)}">
-               <datalist id="gr_dlg">${GROUPS_HINT.map(g => `<option value="${g}">`).join("")}</datalist>`;
+      input = `<input id="cf_${f}" autocomplete="off" value="${v}" placeholder="${esc(extra)}">
+               <div class="chips">${GROUPS_HINT.map(g =>
+                 `<button type="button" class="chip" onclick="pickGroup('${g}')">${esc(g)}</button>`).join("")}</div>`;
     }else if(type === "date"){
       input = `<input id="cf_${f}" type="date" value="${v}">`;
     }else{
@@ -326,6 +327,13 @@ function childDialog(id){
   setTimeout(() => el("cf_full_name").focus(), 50);
 }
 
+function pickGroup(g){
+  const f = el("cf_group_name");
+  if(!f) return;
+  f.value = g;
+  f.focus();
+}
+
 function readChildForm(){
   const o = { institution_id: S.instId };
   CHILD_FIELDS.forEach(([f,,type]) => {
@@ -346,13 +354,13 @@ async function saveChild(id, again){
       if(i >= 0) S.children[i] = data;
       S.highlight = id;
       closeLayer(); rerender(); scrollToHighlight();
-      toast("Збережено");
+      warnIfMismatch(payload, data);
     }else{
       const { data, error } = await sb.from("children").insert(payload).select().single();
       if(error) throw error;
       S.children.push(data);
       S.highlight = data.id;
-      toast("Додано: " + data.full_name);
+      warnIfMismatch(payload, data, true);
       if(again){
         ["full_name","birth_date","parents","address","phone"].forEach(f => el("cf_" + f).value = "");
         el("cf_full_name").focus();
@@ -362,6 +370,21 @@ async function saveChild(id, again){
       }
     }
   }catch(e){ fail(e) }
+}
+
+/* Перевіряє, що поля справді записались такими, якими їх бачили на екрані.
+   Якщо ні (буває на старих браузерах, коли поле не встигло зафіксувати
+   введений текст) — попереджаємо, а не мовчки лишаємо дитину без групи. */
+function warnIfMismatch(sent, saved, isNew){
+  const bad = [];
+  ["full_name","group_name"].forEach(f => {
+    if((sent[f] || "") !== (saved[f] || "")) bad.push(f === "group_name" ? "групу" : "ім'я");
+  });
+  if(bad.length){
+    toast(`Увага: ${bad.join(" і ")} не збереглося — відкрийте картку ще раз і перевірте`, true);
+  }else{
+    toast(isNew ? "Додано: " + saved.full_name : "Збережено");
+  }
 }
 
 function renderBehindModal(){
