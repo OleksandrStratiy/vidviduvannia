@@ -21,7 +21,9 @@ const FILL_FIELDS = ["group_name","birth_date","parents","address","phone",
 /* ---------- Стан ---------- */
 const S = {
   profile:null, institutions:[], years:[], yearId:null,
-  instId:null, children:[], marks:{}, conf:{}, holidays:new Set(), holidayTitles:{},
+  instId:null, children:[], marks:{}, holidays:new Set(), holidayTitles:{},
+  gorder:new Map(),  // власний порядок груп закладу: ключ групи → місце
+  gorderReady:false, // чи є в базі таблиця group_order (sql/09)
   tab:"today", curDate:todayISO(), vy:null, vm:null,
   search:"", groupFilter:"", sortKey:"group", sortDir:1,
   community:null, summary:null, busy:false, keepScroll:false, saving:false,
@@ -49,7 +51,6 @@ function plural(n, one, few, many){
 function kidsWord(n){ return n + " " + plural(n, "дитина", "дитини", "дітей") }
 function fmtLong(s){ return new Date(s).toLocaleDateString("uk-UA",{day:"numeric",month:"long",weekday:"long"}) }
 function fmtShort(s){ return new Date(s).toLocaleDateString("uk-UA") }
-function fmtTime(ts){ return new Date(ts).toLocaleTimeString("uk-UA",{hour:"2-digit",minute:"2-digit"}) }
 function monthName(y,m){ return new Date(y,m,1).toLocaleDateString("uk-UA",{month:"long",year:"numeric"}) }
 function isWeekend(s){ const w = new Date(s).getDay(); return w===0 || w===6 }
 function isWork(s){ return !isWeekend(s) && !S.holidays.has(s) }
@@ -106,8 +107,8 @@ function tidyGroup(s){
   if(/[а-яіїєґА-ЯІЇЄҐ]/.test(t)) t = t.replace(/[ABCEHIKMOPTXYaceiopxy]/g, ch => LATCASE[ch]);
   return t.replace(/\s*[\u2010-\u2015-]\s*/g, "-").replace(/№\s+/g, "№");
 }
-/* Порядок: раннього віку → І молодша → ІІ молодша → середня → старша →
-   різновікова → решта за назвою → «без групи» в кінці */
+/* Автоматичний порядок (поки заклад не задав свій): раннього віку → І молодша →
+   ІІ молодша → середня → старша → різновікова → решта за назвою */
 function groupRank(k){
   if(!k) return 99;
   if(/раннь|ясел|ясл/.test(k)) return 0;
@@ -143,8 +144,19 @@ function groupsOf(list){
   });
   const arr = [...m.values()];
   arr.forEach(g => g.kids.sort(byName));
-  return arr.sort((a,b) => groupRank(a.key) - groupRank(b.key) ||
-                           a.name.localeCompare(b.name, "uk", {numeric:true}));
+  return arr.sort(cmpGroups);
+}
+/* Спершу — порядок, заданий закладом у «Налаштуваннях»; групи, яких у ньому
+   ще немає, — після них; «без групи» — завжди в самому кінці. */
+function cmpGroups(a, b){
+  if(!a.key || !b.key) return (a.key ? 0 : 1) - (b.key ? 0 : 1);
+  const pa = S.gorder.get(a.key), pb = S.gorder.get(b.key);
+  if(pa !== undefined || pb !== undefined){
+    if(pa === undefined) return 1;
+    if(pb === undefined) return -1;
+    if(pa !== pb) return pa - pb;
+  }
+  return groupRank(a.key) - groupRank(b.key) || a.name.localeCompare(b.name, "uk", {numeric:true});
 }
 function groupTitle(name){
   if(!name) return "Без групи";
@@ -301,6 +313,7 @@ async function reload(){
   try{
     if(S.tab === "settings"){
       await loadYears(); await loadHolidays();
+      await loadChildren(); await loadGroupOrder();
     } else if(S.tab === "community"){
       const { data, error } = await sb.rpc("community_day", { p_day: S.curDate });
       if(error) throw error;
@@ -316,6 +329,7 @@ async function reload(){
         S.yearId = null; await loadYears(); await loadHolidays();
       }
       await loadChildren();
+      await loadGroupOrder();
       await loadMonth();
     }
   }catch(e){ fail(e) }
@@ -354,17 +368,20 @@ async function loadChildren(){
 async function loadMonth(){
   const from = iso(new Date(S.vy, S.vm, 1)), to = iso(new Date(S.vy, S.vm+1, 0));
   const lo = S.curDate < from ? S.curDate : from, hi = S.curDate > to ? S.curDate : to;
-  const [att, conf] = await Promise.all([
-    sb.from("attendance").select("child_id,day,mark")
-      .eq("institution_id", S.instId).gte("day", lo).lte("day", hi),
-    sb.from("day_confirmations").select("day,confirmed_at")
-      .eq("institution_id", S.instId).gte("day", lo).lte("day", hi)
-  ]);
-  if(att.error) throw att.error;
+  const { data, error } = await sb.from("attendance").select("child_id,day,mark")
+    .eq("institution_id", S.instId).gte("day", lo).lte("day", hi);
+  if(error) throw error;
   S.marks = {};
-  (att.data || []).forEach(r => S.marks[r.child_id + "|" + r.day] = r.mark);
-  S.conf = {};
-  if(!conf.error) (conf.data || []).forEach(r => S.conf[r.day] = r.confirmed_at || true);
+  (data || []).forEach(r => S.marks[r.child_id + "|" + r.day] = r.mark);
+}
+
+/* Порядок груп закладу. Якщо таблиці ще немає (не виконано sql/09) —
+   просто діє автоматичний порядок, нічого не ламається. */
+async function loadGroupOrder(){
+  const { data, error } = await sb.from("group_order").select("group_key,pos")
+    .eq("institution_id", S.instId);
+  S.gorderReady = !error;
+  S.gorder = new Map((error ? [] : data || []).map(r => [r.group_key, r.pos]));
 }
 
 /* =====================================================================
@@ -396,50 +413,6 @@ async function setMark(childId, day, mark){
     if(prev) S.marks[key] = prev; else delete S.marks[key];
     rerender(); fail(e);
   }
-}
-
-/* =====================================================================
-   Підтвердження дня
-   Зберігаються лише пропуски, тож садочок, який сьогодні нічого не вносив,
-   для відділу освіти виглядав би як «усі присутні». Кнопка «Підтвердити
-   день» показує, що відвідування за цей день справді внесено.
-   ===================================================================== */
-async function confirmDay(){
-  const day = S.curDate;
-  try{
-    const { data, error } = await sb.from("day_confirmations")
-      .upsert({ institution_id: S.instId, day, confirmed_at: new Date().toISOString() },
-              { onConflict: "institution_id,day" })
-      .select().single();
-    if(error) throw error;
-    S.conf[day] = (data && data.confirmed_at) || new Date().toISOString();
-    rerender(); toast("День підтверджено");
-  }catch(e){ fail(e) }
-}
-async function unconfirmDay(){
-  const day = S.curDate;
-  try{
-    const { error } = await sb.from("day_confirmations").delete()
-      .eq("institution_id", S.instId).eq("day", day);
-    if(error) throw error;
-    delete S.conf[day];
-    rerender(); toast("Підтвердження знято");
-  }catch(e){ fail(e) }
-}
-function confirmBar(holiday){
-  if(ro() || holiday || S.curDate > todayISO() || !yearKids().length) return "";
-  const c = S.conf[S.curDate], isToday = S.curDate === todayISO();
-  if(c){
-    const when = c === true ? "" : (iso(new Date(c)) === S.curDate ? " о " + fmtTime(c)
-      : " " + new Date(c).toLocaleDateString("uk-UA",{day:"numeric",month:"numeric"}) + " о " + fmtTime(c));
-    return `<div class="confdock done" role="region" aria-label="Підтвердження дня"><div class="confin">
-      <span class="ctext"><b>✓ День підтверджено${when}</b><small>Відділ освіти бачить, що дані внесено.</small></span>
-      <button class="linkbtn" onclick="unconfirmDay()">Скасувати</button></div></div>`;
-  }
-  return `<div class="confdock" role="region" aria-label="Підтвердження дня"><div class="confin">
-    <span class="ctext"><b>Усіх відсутніх ${isToday ? "" : "за " + fmtShort(S.curDate) + " "}позначено?</b>
-      <small>Відділ освіти побачить, що день заповнено.</small></span>
-    <button class="btn btn-accent" onclick="confirmDay()">Підтвердити день</button></div></div>`;
 }
 
 /* =====================================================================
@@ -841,11 +814,18 @@ function render(){
   }
   v.querySelectorAll("input[data-mixed]").forEach(x => x.indeterminate = true);
   document.body.classList.toggle("selecting", !!v.querySelector(".selbar"));
-  document.body.classList.toggle("docked", !!v.querySelector(".confdock"));
 
   if(fid){
     const n = el(fid);
     if(n){ n.focus({ preventScroll:true }); try{ if(caret) n.setSelectionRange(caret[0], caret[1]) }catch(e){} }
+  }
+  /* після ↑/↓ у порядку груп курсор іде за пересунутою групою */
+  if(S.focusAfter){
+    const [pre, i] = S.focusAfter, n = el(pre + i) || null;
+    const alt = el((pre === "gup_" ? "gdn_" : "gup_") + i);
+    const t = n && !n.disabled ? n : alt;
+    if(t) t.focus({ preventScroll:true });
+    S.focusAfter = null;
   }
   const ns = v.querySelector(".scroll");
   if(S.keepScroll){
@@ -941,12 +921,13 @@ function viewToday(){
     <div class="sum"><b>${pct}%</b><span>відвідування</span></div>
   </div>
   ${list.length === 0 ? `<div class="card">Список дітей порожній. Перейдіть на вкладку «Діти» і додайте дітей.</div>` : ""}
-  ${groups.length > 1 ? `<div class="gtools"><button class="linkbtn" onclick="toggleAllGroups(${allOpen ? 0 : 1})">${
+  ${groups.length > 1 ? `<div class="gtools">
+      ${ro() ? "" : `<button class="linkbtn" onclick="go('settings')">Змінити порядок груп</button>`}
+      <button class="linkbtn push" onclick="toggleAllGroups(${allOpen ? 0 : 1})">${
       allOpen ? "Згорнути всі групи" : "Розгорнути всі групи"}</button></div>` : ""}
   ${groups.map(g => groupCard(g, open.has(g.key), day)).join("")}
   <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp;
-     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув — ставиться датою вибуття на вкладці «Діти»</p>
-  ${confirmBar(holiday)}`;
+     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув — ставиться датою вибуття на вкладці «Діти»</p>`;
 }
 function groupCard(g, isOpen, day){
   const c = {P:0,N:0,H:0,K:0};
@@ -1028,7 +1009,8 @@ function viewMonth(){
     <div class="monthname">${monthName(S.vy,S.vm)}</div>
     <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
-  ${allGroups.length > 1 || S.groupFilter ? `<div class="toolbar">${groupSelect(allGroups)}</div>` : ""}
+  ${allGroups.length > 1 || S.groupFilter ? `<div class="toolbar">${groupSelect(allGroups)}${
+      ro() || allGroups.length < 2 ? "" : `<button class="linkbtn" onclick="go('settings')">Змінити порядок груп</button>`}</div>` : ""}
   ${ro() ? `<span class="viewonly">Лише перегляд</span>` : ""}
   <p class="note">${ro()
     ? "Відділ освіти дані не змінює."
@@ -1251,16 +1233,38 @@ async function bulkGroup(){
   const name = canonGroup(el("bg_name").value);
   if(!name) return toast("Впишіть назву групи", true);
   const ids = selectedKids().map(c => c.id);
+  const fromKeys = [...new Set(selectedKids().map(c => nkey(c.group_name)))];
   S.saving = true;
   try{
     const { data, error } = await sb.from("children").update({ group_name: name }).in("id", ids).select();
     if(error) throw error;
     mergeKids(data);
+    await keepGroupPlace(fromKeys, nkey(name));
     S.flash = new Set(ids); S.sel = null;
     closeLayer(); rerender(); scrollToFlash();
     toast(`Переведено в «${name}»: ${kidsWord((data || []).length)}`, false, 2600);
   }catch(e){ fail(e) }
   finally{ S.saving = false }
+}
+
+/* Якщо всю групу перейменували («Перевести в групу»), нова назва
+   займає місце старої у порядку груп. */
+async function keepGroupPlace(fromKeys, newKey){
+  if(fromKeys.length !== 1) return;
+  const old = fromKeys[0];
+  if(!old || old === newKey || !S.gorder.has(old)) return;
+  if(yearKids().some(c => nkey(c.group_name) === old)) return;     // у старій групі ще хтось є
+  try{
+    if(S.gorder.has(newKey)){
+      await sb.from("group_order").delete().eq("institution_id", S.instId).eq("group_key", old);
+    }else{
+      const { error } = await sb.from("group_order").update({ group_key: newKey })
+        .eq("institution_id", S.instId).eq("group_key", old);
+      if(error) throw error;
+      S.gorder.set(newKey, S.gorder.get(old));
+    }
+    S.gorder.delete(old);
+  }catch(e){ console.error("Порядок груп:", e) }
 }
 
 /* =====================================================================
@@ -1325,8 +1329,7 @@ function viewCommunity(){
   const total = work.reduce((s,r) => s + Number(r.kids), 0);
   const present = work.reduce((s,r) => s + Number(r.present), 0);
   const avg = total ? Math.round(present / total * 100) : 0;
-  const future = S.curDate > todayISO(), weekend = isWeekend(S.curDate);
-  const confN = work.filter(r => r.confirmed).length;
+  const weekend = isWeekend(S.curDate);
   return `
   <div class="datebar">
     <button class="btn" onclick="shiftDay(-1)" aria-label="Попередній день">‹</button>
@@ -1337,34 +1340,28 @@ function viewCommunity(){
   <h2 class="title">${fmtLong(S.curDate)}</h2>
   <p class="note">${weekend
     ? "Вихідний день — відвідування не рахується."
-    : "Натисніть на заклад, щоб відкрити його сітку за місяць. «Підтверджено» означає, що заклад натиснув «Підтвердити день»; без цього 100% може означати, що дані просто не внесли."}</p>
+    : "Загальна картина по громаді. Натисніть на заклад, щоб відкрити його сітку за місяць."}</p>
   <div class="summary">
     <div class="sum"><b>${total}</b><span>дітей у громаді</span></div>
     <div class="sum ok"><b>${present}</b><span>присутні</span></div>
     <div class="sum no"><b>${total - present}</b><span>відсутні</span></div>
     <div class="sum"><b>${avg}%</b><span>відвідування</span></div>
-    ${future || weekend ? "" : `<div class="sum"><b>${confN} з ${work.length}</b><span>підтвердили день</span></div>`}
   </div>
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Заклад</th>
-      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th><th>Підтверджено</th></tr></thead>
+      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th></tr></thead>
     <tbody>${rows.map((r,i) => {
       const isW = r.is_work !== false;
       const pct = r.kids ? Math.round(r.present / r.kids * 100) : null;
-      const conf = !isW || future ? `<td class="muted">—</td>`
-        : r.confirmed ? `<td class="okmark">✓${r.confirmed_at ? " " + fmtTime(r.confirmed_at) : ""}</td>`
-        : `<td class="nomark">ні</td>`;
       return `<tr class="clickable" onclick="openInst(${r.institution_id})">
         <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td>
         <td>${r.kids}</td>
         ${isW ? `<td>${r.present}</td><td>${r.kids - r.present}</td>
           <td class="pct ${pct !== null && pct < 70 ? "low" : ""}">${pct === null ? "—" : pct + "%"}</td>`
           : `<td colspan="3" class="muted">неробочий день</td>`}
-        ${conf}
       </tr>`}).join("")}
       <tr class="total"><td class="num"></td><td class="name">Разом по громаді</td>
-        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td>
-        <td>${future || weekend ? "" : confN + " з " + work.length}</td></tr>
+        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td></tr>
     </tbody></table></div>`;
 }
 function setDateReload(v){ if(!v) return; S.curDate = v; const d = new Date(v); S.vy = d.getFullYear(); S.vm = d.getMonth(); reload() }
@@ -1387,7 +1384,6 @@ function summaryCalc(){
 function viewSummary(){
   const { rows, pct, avg } = summaryCalc();
   const sum = f => rows.reduce((s,r) => s + Number(r[f] || 0), 0);
-  const conf = r => r.work_days == null ? "—" : `${r.conf_days} з ${r.work_days}`;
   return `
   <div class="datebar">
     <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
@@ -1395,8 +1391,7 @@ function viewSummary(){
     <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
   <h2 class="title">Звіт по громаді</h2>
-  <p class="note">Відсоток кожного закладу рахується за його власними робочими днями, що вже минули.
-    «Підтверджено» — скільки робочих днів заклад підтвердив.</p>
+  <p class="note">Відсоток кожного закладу рахується за його власними робочими днями, що вже минули.</p>
   <div class="summary">
     <div class="sum"><b>${sum("kids")}</b><span>дітей</span></div>
     <div class="sum ok"><b>${avg}%</b><span>середнє</span></div>
@@ -1404,17 +1399,16 @@ function viewSummary(){
   </div>
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Заклад</th><th>Дітей</th><th>Роб. днів</th><th>%</th>
-      <th>н</th><th>хв</th><th>кор</th><th>Пільга 50%</th><th>Пільга 100%</th><th>Вибули</th><th>Підтверджено</th></tr></thead>
+      <th>н</th><th>хв</th><th>кор</th><th>Пільга 50%</th><th>Пільга 100%</th><th>Вибули</th></tr></thead>
     <tbody>${rows.map((r,i) => { const p = pct(r); return `<tr>
       <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td><td>${r.kids}</td>
       <td>${r.work_days ?? "—"}</td>
       <td class="pct ${p !== null && p < 70 ? "low" : ""}">${p === null ? "—" : p + "%"}</td>
       <td>${r.n}</td><td>${r.h}</td><td>${r.k}</td><td>${r.ben50}</td><td>${r.ben100}</td><td>${r.gone}</td>
-      <td class="${r.work_days != null && Number(r.conf_days) < Number(r.work_days) ? "nomark" : ""}">${conf(r)}</td>
     </tr>` }).join("")}
       <tr class="total"><td class="num"></td><td class="name">Разом</td><td>${sum("kids")}</td><td></td><td>${avg}%</td>
         <td>${sum("n")}</td><td>${sum("h")}</td><td>${sum("k")}</td>
-        <td>${sum("ben50")}</td><td>${sum("ben100")}</td><td>${sum("gone")}</td><td></td></tr>
+        <td>${sum("ben50")}</td><td>${sum("ben100")}</td><td>${sum("gone")}</td></tr>
     </tbody></table></div>
   <button class="btn-main" style="margin-top:11px" onclick="exportSummary()">Вивантажити в Excel</button>`;
 }
@@ -1426,10 +1420,12 @@ function viewSettings(){
   const y = curYear();
   const hol = [...S.holidays].filter(d => !y || (d >= y.starts_on && d <= yearEnd(y))).sort();
   return `${instPicker()}
-  <h2 class="title">Роки і неробочі дні</h2>
+  <h2 class="title">Налаштування</h2>
   <p class="note">${ro()
     ? "Кожен заклад веде це самостійно. Відділ освіти лише переглядає."
     : "Налаштування вашого закладу — на інші садочки вони не впливають."}</p>
+
+  ${groupOrderCard()}
 
   <div class="card">
     <h3>Роки закладу</h3>
@@ -1465,6 +1461,77 @@ function viewSettings(){
       <button class="btn btn-accent" onclick="addHoliday()">Додати</button>
     </div>`}
   </div>`;
+}
+
+/* ---------- Порядок груп ---------- */
+function groupOrderCard(){
+  const groups = groupsOf(yearKids()).filter(g => g.key);
+  const custom = groups.some(g => S.gorder.has(g.key));
+  const canEdit = !ro() && S.gorderReady && groups.length > 1;
+  const rows = groups.length < 2
+    ? `<p class="hint">${groups.length ? "У закладі одна група — упорядковувати нічого."
+                                      : "Груп ще немає: назви груп беруться з карток дітей."}</p>`
+    : `<ol class="ordlist">${groups.map((g, i) => `
+        <li class="ordrow">
+          <span class="gpos" aria-hidden="true">${i + 1}</span>
+          <span class="setinfo"><b>${esc(groupTitle(g.name))}</b><small>${kidsWord(g.kids.length)}</small></span>
+          ${canEdit ? `
+          <button class="ordbtn" id="gup_${i}" ${i === 0 ? "disabled" : ""}
+            aria-label="Вище: ${esc(groupTitle(g.name))}" onclick="moveGroup(${i},-1)">↑</button>
+          <button class="ordbtn" id="gdn_${i}" ${i === groups.length - 1 ? "disabled" : ""}
+            aria-label="Нижче: ${esc(groupTitle(g.name))}" onclick="moveGroup(${i},1)">↓</button>` : ""}
+        </li>`).join("")}</ol>`;
+  const note = !S.gorderReady
+      ? `Щоб задавати порядок, адміністратор системи має виконати в базі файл <b>sql/09-group-order.sql</b>.`
+    : ro() ? "Порядок задає сам заклад."
+    : groups.length < 2 ? ""
+    : custom ? `Порядок задано вручну. Нова група стане в кінець списку, поки її не пересунете.
+        <button class="linkbtn" onclick="resetGroupOrder()">Повернути автоматичний порядок</button>`
+    : "Зараз діє автоматичний порядок: раннього віку, молодші, середні, старші, різновікові, решта. Пересуньте групу стрілками — і порядок стане вашим.";
+  return `<div class="card">
+    <h3>Порядок груп</h3>
+    <p class="hint" style="margin-top:0">У такому порядку групи йдуть на «Сьогодні», у «Місяці»,
+      на вкладці «Діти» і у вивантаженнях в Excel — на всіх телефонах і комп'ютерах закладу.</p>
+    ${rows}
+    ${note ? `<p class="hint" style="margin-bottom:0">${note}</p>` : ""}
+  </div>`;
+}
+
+/* Стрілка переставляє групу одразу на екрані, а в базу порядок іде
+   за пів секунди після останнього натиску — щоб швидкі натиски не сперечались. */
+let gorderTimer = null;
+function moveGroup(i, dir){
+  const keys = groupsOf(yearKids()).filter(g => g.key).map(g => g.key);
+  const j = i + dir;
+  if(j < 0 || j >= keys.length) return;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  keys.forEach((k, p) => S.gorder.set(k, p));
+  S.focusAfter = [dir < 0 ? "gup_" : "gdn_", j];
+  rerender();
+  const inst = S.instId;
+  clearTimeout(gorderTimer);
+  gorderTimer = setTimeout(() => saveGroupOrder(inst, keys), 450);
+}
+async function saveGroupOrder(inst, keys){
+  try{
+    const { error } = await sb.from("group_order")
+      .upsert(keys.map((k, p) => ({ institution_id: inst, group_key: k, pos: p })),
+              { onConflict: "institution_id,group_key" });
+    if(error) throw error;
+    toast("Порядок груп збережено");
+  }catch(e){
+    fail(e);
+    if(inst === S.instId){ await loadGroupOrder(); rerender() }
+  }
+}
+async function resetGroupOrder(){
+  clearTimeout(gorderTimer);
+  try{
+    const { error } = await sb.from("group_order").delete().eq("institution_id", S.instId);
+    if(error) throw error;
+    S.gorder = new Map();
+    rerender(); toast("Повернуто автоматичний порядок");
+  }catch(e){ fail(e) }
 }
 
 function yearDialog(id){
@@ -1598,10 +1665,10 @@ function exportReport(){
 function exportSummary(){
   const { rows, pct } = summaryCalc();
   const head = ["№","Заклад","Дітей","Робочих днів","% відвідування","н","хв","кор",
-    "Пільга 50%","Пільга 100%","Вибули за місяць","Підтверджено днів"];
+    "Пільга 50%","Пільга 100%","Вибули за місяць"];
   download(`zvit-gromady-${monthName(S.vy,S.vm)}.csv`,
     [head, ...rows.map((r,i) => [i+1, r.name, r.kids, r.work_days ?? "", pct(r) ?? "",
-      r.n, r.h, r.k, r.ben50, r.ben100, r.gone, r.conf_days ?? ""])]);
+      r.n, r.h, r.k, r.ben50, r.ben100, r.gone])]);
 }
 
 /* =====================================================================
