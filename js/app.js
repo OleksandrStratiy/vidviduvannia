@@ -172,8 +172,12 @@ function canonGroup(v){
 function gfOk(key){ return !S.groupFilter || S.groupFilter === (key || "~") }
 function groupSelect(groups){
   if(groups.length < 2 && !S.groupFilter) return "";
+  /* вибрана група може бути порожньою в цьому місяці — лишаємо її у списку з нулем */
+  const lost = S.groupFilter && !groups.some(g => (g.key || "~") === S.groupFilter);
   return `<select class="grpsel" aria-label="Група" onchange="setGroupFilter(this.value)">
     <option value="">Усі групи</option>
+    ${lost ? `<option value="${esc(S.groupFilter)}" selected>${esc(groupTitle(
+      S.groupFilter === "~" ? "" : groupNames().get(S.groupFilter) || ""))} (0)</option>` : ""}
     ${groups.map(g => { const v = g.key || "~";
       return `<option value="${esc(v)}" ${S.groupFilter===v?"selected":""}>${esc(groupTitle(g.name))} (${g.kids.length})</option>` }).join("")}
   </select>`;
@@ -851,6 +855,13 @@ function inYear(c){
   return true;
 }
 function yearKids(){ return S.children.filter(inYear) }
+/* Дитина належить місяцю, якщо була в закладі хоч один його день:
+   зарахована в жовтні — у вересні її немає, вибула у вересні — у жовтні теж. */
+function inMonth(c, y, m){
+  const from = iso(new Date(y, m, 1)), to = iso(new Date(y, m + 1, 0));
+  return (!c.enrolled_on || c.enrolled_on <= to) && (!c.left_on || c.left_on >= from);
+}
+function monthKids(){ return yearKids().filter(c => inMonth(c, S.vy, S.vm)) }
 
 function sortedKids(){
   const order = new Map(groupsOf(S.children).map((g,i) => [g.key, i]));
@@ -983,23 +994,30 @@ function shiftDay(n){
    ===================================================================== */
 function viewMonth(){
   const days = workDays(S.vy, S.vm);
-  const allGroups = groupsOf(yearKids());
+  const kids = monthKids();
+  const allGroups = groupsOf(kids);
   const groups = allGroups.filter(g => gfOk(g.key));
   const shown = groups.flatMap(g => g.kids);
   const multi = groups.length > 1;
+  /* Дні до зарахування — сірі й порожні, дні після вибуття — сірі з «виб».
+     На них не можна натиснути і вони не йдуть у «Присутніх за день». */
   const cell = (c, d) => {
     const m = markOf(c, d);
-    const clickable = !ro() && m !== "V" && m !== "X";
-    return `<td class="cell ${clickable?"":"ro"} ${m==="P"||m==="X"?"":m}"
-      ${clickable?`onclick="openPick(event,${c.id},'${d}')"`:""}>${m==="P"||m==="X"?"":MARK[m]}</td>`;
+    if(m === "X") return `<td class="cell ro X" title="Ще не зараховано (з ${fmtShort(c.enrolled_on)})"></td>`;
+    if(m === "V") return `<td class="cell ro V" title="Вибув (${fmtShort(c.left_on)})">${MARK.V}</td>`;
+    return `<td class="cell ${ro()?"ro":""} ${m==="P"?"":m}"
+      ${ro()?"":`onclick="openPick(event,${c.id},'${d}')"`}>${m==="P"?"":MARK[m]}</td>`;
   };
+  const nameTip = c => [c.full_name,
+    c.enrolled_on ? "зараховано " + fmtShort(c.enrolled_on) : "",
+    c.left_on ? "вибуття " + fmtShort(c.left_on) : ""].filter(Boolean).join(" · ");
   const presentRow = (kids, label, cls) => `<tr class="${cls}"><td class="num"></td><td class="name">${label}</td>${
     days.map(d => `<td>${kids.filter(c => markOf(c,d)==="P").length}</td>`).join("")}</tr>`;
   const body = groups.map(g => `
     <tr class="grp"><td class="num"></td>
       <td class="name"><b>${esc(groupTitle(g.name))}</b><span>${kidsWord(g.kids.length)}</span></td>
       ${days.length ? `<td colspan="${days.length}"></td>` : ""}</tr>
-    ${g.kids.map((c,i) => `<tr><td class="num">${i+1}</td><td class="name" title="${esc(c.full_name)}">${esc(c.full_name)}</td>${
+    ${g.kids.map((c,i) => `<tr><td class="num">${i+1}</td><td class="name" title="${esc(nameTip(c))}">${esc(c.full_name)}</td>${
       days.map(d => cell(c,d)).join("")}</tr>`).join("")}
     ${multi ? presentRow(g.kids, "Присутніх у групі", "sub") : ""}`).join("");
 
@@ -1015,7 +1033,9 @@ function viewMonth(){
   <p class="note">${ro()
     ? "Відділ освіти дані не змінює."
     : "Натисніть клітинку — і виберіть позначку зі списку. Вихідні та святкові дні у сітці не показуються."}</p>
-  ${shown.length === 0 ? `<div class="card">${yearKids().length ? "У цій групі дітей немає." : "Список дітей порожній."}</div>` : `
+  ${shown.length === 0 ? `<div class="card">${!yearKids().length ? "Список дітей порожній."
+      : !kids.length ? "У цьому місяці дітей у закладі не було."
+      : "У цій групі цього місяця дітей немає."}</div>` : `
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Прізвище, ім'я, по батькові</th>
       ${days.map(d => `<th>${new Date(d).getDate()}</th>`).join("")}</tr></thead>
@@ -1023,7 +1043,8 @@ function viewMonth(){
       ${presentRow(shown, S.groupFilter ? "Присутніх у групі" : "Присутніх за день", "total")}
     </tbody></table></div>`}
   <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp;
-     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув</p>`;
+     <i class="K">кор</i>за кордоном &nbsp; <i class="V">виб</i>вибув &nbsp;
+     <i class="X"></i>ще не зараховано</p>`;
 }
 function shiftMonth(n){ const d = new Date(S.vy, S.vm + n, 1); S.vy = d.getFullYear(); S.vm = d.getMonth(); reload() }
 
@@ -1649,13 +1670,14 @@ function exportKids(){
 /* Сітка місяця: групи окремими блоками, як на екрані */
 function exportReport(){
   const days = workDays(S.vy, S.vm);
-  const groups = groupsOf(yearKids());
+  const groups = groupsOf(monthKids());
   const presentRow = (kids, label) => ["", label, ...days.map(d => kids.filter(c => markOf(c,d)==="P").length), ""];
   const out = [["№","Прізвище, ім'я, по батькові", ...days.map(d => new Date(d).getDate()), "Присутніх днів"]];
   groups.forEach(g => {
     out.push(["", groupTitle(g.name)]);
     g.kids.forEach((c,i) => out.push([i+1, c.full_name,
-      ...days.map(d => { const m = markOf(c,d); return m==="P"||m==="X" ? "" : MARK[m] }),
+      /* «—» — дитину ще не зараховано, щоб не сплутати з присутністю */
+      ...days.map(d => { const m = markOf(c,d); return m==="P" ? "" : m==="X" ? "—" : MARK[m] }),
       days.filter(d => markOf(c,d)==="P").length]));
     if(groups.length > 1) out.push(presentRow(g.kids, "Присутніх у групі"));
   });
