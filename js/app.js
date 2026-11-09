@@ -54,6 +54,7 @@ function fmtShort(s){ return new Date(s).toLocaleDateString("uk-UA") }
 function monthName(y,m){ return new Date(y,m,1).toLocaleDateString("uk-UA",{month:"long",year:"numeric"}) }
 function isWeekend(s){ const w = new Date(s).getDay(); return w===0 || w===6 }
 function isWork(s){ return !isWeekend(s) && !S.holidays.has(s) }
+function addDays(s, n){ const d = new Date(s); d.setDate(d.getDate() + n); return iso(d) }
 function workDays(y,m){
   const out=[], d=new Date(y,m,1);
   while(d.getMonth()===m){ const s=iso(new Date(d)); if(isWork(s)) out.push(s); d.setDate(d.getDate()+1) }
@@ -282,6 +283,8 @@ async function start(){
     if(prof.error) throw prof.error;
 
     S.profile = prof.data;
+    /* у суботу й неділю «Громада» відкривається на п'ятниці, а не на порожньому вихідному */
+    if(isAdmin()) while(isWeekend(S.curDate)) S.curDate = addDays(S.curDate, -1);
     S.institutions = inst.data || [];
     S.instId = S.profile.institution_id || (S.institutions[0] && S.institutions[0].id);
     await loadYears();
@@ -322,6 +325,7 @@ async function reload(){
       const { data, error } = await sb.rpc("community_day", { p_day: S.curDate });
       if(error) throw error;
       S.community = data || [];
+      S.loadedAt = new Date();
     } else if(S.tab === "summary"){
       /* Межі місяця; робочі дні кожного закладу рахує сама база */
       const { data, error } = await sb.rpc("community_period",
@@ -442,7 +446,11 @@ function childDialog(id){
   const isNew = !c;
   const y = curYear();
   const defGroup = S.groupFilter && S.groupFilter !== "~" ? (groupNames().get(S.groupFilter) || "") : "";
-  const val = f => c ? (c[f] ?? "") : (f === "group_name" ? defGroup : f === "edu_form" ? "очна" : "");
+  /* Нова дитина посеред року отримує дату зарахування «сьогодні»: без дати вона
+     рахувалася б присутньою з 1 вересня і заднім числом змінила б звіти минулих місяців */
+  const t = todayISO(), midYear = isNew && y && t >= addDays(y.starts_on, 14) && t <= yearEnd(y);
+  const val = f => c ? (c[f] ?? "") : (f === "group_name" ? defGroup : f === "edu_form" ? "очна"
+                                       : f === "enrolled_on" && midYear ? t : "");
   const chips = list => `<div class="chips">${list.join("")}</div>`;
   const chip = (label, id, v, title) =>
     `<button type="button" class="chip" ${title ? `title="${esc(title)}"` : ""}
@@ -476,7 +484,9 @@ function childDialog(id){
   <div class="modal" onclick="if(event.target===this)closeLayer()"><div class="box wide">
     <h3>${isNew ? "Нова дитина" : "Картка дитини"}</h3>
     ${CHILD_FIELDS.map(fieldHTML).join("")}
-    <p class="hint">Дату зарахування можна лишити порожньою, якщо дитина ходить з початку року.
+    <p class="hint">${midYear
+       ? "Дату зарахування підставлено сьогоднішню. Якщо дитина ходить з початку року — натисніть «Початок року»."
+       : "Дату зарахування можна лишити порожньою, якщо дитина ходить з початку року."}
        Дата вибуття — останній день у закладі: з наступного дня в сітці стоїть «виб»,
        а вся історія відвідування зберігається.</p>
     <button class="btn-main" onclick="saveChild(${id || "null"}, false)">Зберегти</button>
@@ -777,6 +787,12 @@ function renderYears(){
   el("yearSel").innerHTML =
     S.years.map(y => `<option value="${y.id}" ${y.id===S.yearId?"selected":""}>${esc(y.name)} н.р.</option>`).join("")
     + (ro() ? "" : `<option value="__new">+ Новий рік…</option>`);
+  syncYearSel();
+}
+/* Роки належать одному закладу: на «Громаді» і «Звіті громади» перемикач зайвий,
+   а якщо в закладу ще немає жодного року — відділу освіти нічого вибирати */
+function syncYearSel(){
+  el("yearSel").classList.toggle("hidden", !!(isAdmin() && (S.tab === "community" || S.tab === "summary" || !S.years.length)));
 }
 
 /* =====================================================================
@@ -788,6 +804,7 @@ function renderTabs(){
     : [["today","Сьогодні"],["month","Місяць"],["kids","Діти"],["report","Звіти"],["settings","Налаштування"]];
   el("tabs").innerHTML = items.map(([k,l]) =>
     `<button class="${S.tab===k?"on":""}" onclick="go('${k}')">${l}</button>`).join("");
+  syncYearSel();
   syncHeader();
 }
 function go(k){ S.tab = k; S.sel = null; renderTabs(); window.scrollTo(0,0); reload() }
@@ -861,7 +878,7 @@ function inMonth(c, y, m){
   const from = iso(new Date(y, m, 1)), to = iso(new Date(y, m + 1, 0));
   return (!c.enrolled_on || c.enrolled_on <= to) && (!c.left_on || c.left_on >= from);
 }
-function monthKids(){ return yearKids().filter(c => inMonth(c, S.vy, S.vm)) }
+function monthKids(){ return S.children.filter(c => inMonth(c, S.vy, S.vm)) }
 
 function sortedKids(){
   const order = new Map(groupsOf(S.children).map((g,i) => [g.key, i]));
@@ -1011,8 +1028,10 @@ function viewMonth(){
   const nameTip = c => [c.full_name,
     c.enrolled_on ? "зараховано " + fmtShort(c.enrolled_on) : "",
     c.left_on ? "вибуття " + fmtShort(c.left_on) : ""].filter(Boolean).join(" · ");
+  /* майбутні дні лишаються порожніми: позначок там ще немає, і «усі присутні» було б неправдою */
+  const today = todayISO();
   const presentRow = (kids, label, cls) => `<tr class="${cls}"><td class="num"></td><td class="name">${label}</td>${
-    days.map(d => `<td>${kids.filter(c => markOf(c,d)==="P").length}</td>`).join("")}</tr>`;
+    days.map(d => `<td>${d > today ? "" : kids.filter(c => markOf(c,d)==="P").length}</td>`).join("")}</tr>`;
   const body = groups.map(g => `
     <tr class="grp"><td class="num"></td>
       <td class="name"><b>${esc(groupTitle(g.name))}</b><span>${kidsWord(g.kids.length)}</span></td>
@@ -1139,7 +1158,7 @@ function viewKids(){
   ${list.length === 0 ? `<div class="card">${all.length
       ? "За цим пошуком нікого не знайдено."
       : "Список порожній. Додайте дітей по одній кнопкою «+ Додати дитину» або завантажте весь список кнопкою «Імпорт»."}</div>` : `
-  <div class="scroll"><table class="grid">
+  <div class="scroll"><table class="grid${ro() ? " noact" : ""}">
     <thead><tr>
       <th class="num">№</th>
       ${ro() ? "" : `<th class="act">${sel ? box(list.map(c => c.id), "Вибрати всіх у списку") : ""}</th>`}
@@ -1289,11 +1308,33 @@ async function keepGroupPlace(fromKeys, newKey){
 }
 
 /* =====================================================================
+   Межі місяця для звітів — однакові для «Звіту закладу» і «Звіту громади»
+   (за тими самими правилами рахує функція community_period у базі):
+     from / to — перше й останнє число місяця;
+     upto      — останній день, що вже настав: майбутні дні у звіти не йдуть;
+     ref       — день, на який рахуємо список дітей, пільги та форми здобуття.
+   ===================================================================== */
+function monthSpan(y, m){
+  const from = iso(new Date(y, m, 1)), to = iso(new Date(y, m + 1, 0)), t = todayISO();
+  const upto = to < t ? to : t;
+  return { from, to, upto, ref: upto < from ? from : upto,
+           future: from > t, current: from <= t && t <= to };
+}
+/* «станом на 09.11.2026» — поточний місяць, «за весь місяць» — минулий */
+function spanNote(sp){
+  return sp.future ? "місяць ще не почався" : sp.current ? "станом на " + fmtShort(sp.upto) : "за весь місяць";
+}
+function ymKey(y, m){ return `${y}-${String(m + 1).padStart(2, "0")}` }   // 2026-11 — для назв файлів
+function pctText(p){ return p === null || p === undefined ? "—" : p + "%" }
+const kv = (label, val) => `<div class="kv"><span>${label}</span><b>${val}</b></div>`;
+
+/* =====================================================================
    Звіт закладу
    ===================================================================== */
 function monthStats(){
-  const days = workDays(S.vy, S.vm).filter(d => d <= todayISO());
-  const list = yearKids();
+  const sp = monthSpan(S.vy, S.vm);
+  const all = workDays(S.vy, S.vm), days = all.filter(d => d <= sp.upto);
+  const list = monthKids();
   let present = 0, slots = 0, N = 0, H = 0, K = 0;
   days.forEach(d => list.forEach(c => {
     const m = markOf(c, d);
@@ -1301,136 +1342,187 @@ function monthStats(){
     slots++;
     if(m === "P") present++; else if(m === "N") N++; else if(m === "H") H++; else if(m === "K") K++;
   }));
-  const act = list.filter(c => (!c.left_on || c.left_on >= S.curDate) && (!c.enrolled_on || c.enrolled_on <= S.curDate));
+  const inSpan = v => !!v && v >= sp.from && v <= sp.upto;
+  const act = list.filter(c => inList(c, sp.ref));
   const byF = {}, byS = {};
   act.forEach(c => { byF[c.edu_form] = (byF[c.edu_form]||0)+1; if(c.special_status) byS[c.special_status] = (byS[c.special_status]||0)+1 });
-  return { days: days.length, pct: slots ? Math.round(present/slots*100) : 0, N, H, K,
-    all: list.length, out: list.filter(c => c.left_on && c.left_on < S.curDate).length, act: act.length,
-    b50: act.filter(c => c.meal_benefit === "50").length,
+  return { sp, days: days.length, allDays: all.length, slots, present, N, H, K,
+    pct: slots ? Math.round(present / slots * 100) : null,
+    act: act.length,
+    arrived: list.filter(c => inSpan(c.enrolled_on)).length,
+    left:    list.filter(c => inSpan(c.left_on)).length,
+    b50:  act.filter(c => c.meal_benefit === "50").length,
     b100: act.filter(c => c.meal_benefit === "100").length, byF, byS };
 }
-function viewReport(){
-  const r = monthStats();
+function statusRows(r){
   const other = Object.keys(r.byS).filter(s => !STATUSES_REF.includes(s));
+  return STATUSES_REF.concat(other).filter(s => r.byS[s]).map(s => [s, r.byS[s]]);
+}
+function viewReport(){
+  const r = monthStats(), sp = r.sp, on = fmtShort(sp.ref);
+  const st = statusRows(r);
   return `${instPicker()}
-  <h2 class="title">Звіт</h2>
-  <p class="note">${esc(instName(S.instId))} · ${monthName(S.vy,S.vm)} · ${esc(curYear()?.name||"")} н.р.</p>
+  <h2 class="title">Звіт закладу</h2>
+  <p class="note">${esc(instName(S.instId))} · ${monthName(S.vy,S.vm)} · ${spanNote(sp)}</p>
   <div class="datebar">
     <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
     <div class="monthname">${monthName(S.vy,S.vm)}</div>
     <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
-  <div class="card"><h3>Кількість дітей</h3>
-    <div class="kv"><span>Всього у базі закладу</span><b>${r.all}</b></div>
-    <div class="kv"><span>Вибуло</span><b>${r.out}</b></div>
-    <div class="kv"><span>Фактично на ${fmtShort(S.curDate)}</span><b>${r.act}</b></div></div>
-  <div class="card"><h3>Відвідування за місяць</h3>
-    <div class="kv"><span>Середнє відвідування</span><b>${r.pct}%</b></div>
-    <div class="kv"><span>Робочих днів пройшло</span><b>${r.days}</b></div>
-    <div class="kv"><span>Пропуски: відсутній (н)</span><b>${r.N}</b></div>
-    <div class="kv"><span>Пропуски: хворів (хв)</span><b>${r.H}</b></div>
-    <div class="kv"><span>Пропуски: за кордоном (кор)</span><b>${r.K}</b></div></div>
-  <div class="card"><h3>Форма здобуття дошкільної освіти</h3>
-    ${FORMS.map(f => `<div class="kv"><span>${f}</span><b>${r.byF[f]||0}</b></div>`).join("")}</div>
-  <div class="card"><h3>Спеціальний статус</h3>
-    ${STATUSES_REF.concat(other).filter(s => r.byS[s]).map(s => `<div class="kv"><span>${esc(s)}</span><b>${r.byS[s]}</b></div>`).join("")
-      || `<div class="kv"><span>Дітей зі статусом немає</span><b>0</b></div>`}</div>
-  <div class="card"><h3>Пільги на харчування</h3>
-    <div class="kv"><span>50%</span><b>${r.b50}</b></div>
-    <div class="kv"><span>100%</span><b>${r.b100}</b></div></div>
-  <button class="btn-main" onclick="exportReport()">Вивантажити сітку місяця в Excel</button>`;
+  ${sp.future ? `<div class="card">Цей місяць ще не почався — відвідування з'явиться з першого робочого дня.</div>` : ""}
+  <div class="card"><h3>Діти</h3>
+    ${kv(`У списку на ${on}`, r.act)}
+    ${kv("Прибуло за місяць", r.arrived)}
+    ${kv("Вибуло за місяць", r.left)}</div>
+  <div class="card"><h3>Відвідування</h3>
+    ${kv(sp.current ? "Робочих днів минуло" : "Робочих днів", sp.current ? `${r.days} з ${r.allDays}` : r.days)}
+    ${kv("Відвідано дітоднів", r.present)}
+    ${kv("Середнє відвідування", pctText(r.pct))}
+    ${kv("Пропущено дітоднів: відсутній (н)", r.N)}
+    ${kv("Пропущено дітоднів: хворів (хв)", r.H)}
+    ${kv("Пропущено дітоднів: за кордоном (кор)", r.K)}</div>
+  <div class="card"><h3>Форма здобуття дошкільної освіти — на ${on}</h3>
+    ${FORMS.map(f => kv(f, r.byF[f] || 0)).join("")}</div>
+  <div class="card"><h3>Спеціальний статус — на ${on}</h3>
+    ${st.map(([s, n]) => kv(esc(s), n)).join("") || kv("Дітей зі статусом немає", 0)}</div>
+  <div class="card"><h3>Пільги на харчування — на ${on}</h3>
+    ${kv("50%", r.b50)}${kv("100%", r.b100)}</div>
+  <p class="legend">Дітодні — скільки днів діти фактично були в закладі за робочі дні, що вже минули.
+     Прибуло й вибуло — за датами зарахування та вибуття в картках дітей.</p>
+  <button class="btn-main" style="margin-top:11px" onclick="exportReportCard()">Вивантажити звіт в Excel</button>
+  <button class="btn" style="width:100%;margin-top:7px" onclick="exportReport()">Вивантажити табель місяця в Excel</button>`;
 }
 
 /* =====================================================================
    Громада (відділ освіти)
+   Майбутня дата і неробочі дні закладів у підсумок не йдуть: без позначок
+   там стояло б «усі присутні», а це неправда.
    ===================================================================== */
+function communityCalc(){
+  const rows = S.community || [], future = S.curDate > todayISO();
+  const isW = r => !future && r.is_work !== false;
+  const work = rows.filter(isW);
+  const sum = (list, f) => list.reduce((s, r) => s + Number(r[f] || 0), 0);
+  const kidsW = sum(work, "kids"), present = sum(work, "present");
+  return { rows, future, work, isW, kidsAll: sum(rows, "kids"), present, absent: kidsW - present,
+    N: sum(work, "n"), H: sum(work, "h"), K: sum(work, "k"),
+    avg: kidsW ? Math.round(present / kidsW * 100) : null,
+    pct: r => Number(r.kids) ? Math.round(r.present / r.kids * 100) : null };
+}
 function viewCommunity(){
-  const rows = S.community || [];
-  const work = rows.filter(r => r.is_work !== false);
-  const total = work.reduce((s,r) => s + Number(r.kids), 0);
-  const present = work.reduce((s,r) => s + Number(r.present), 0);
-  const avg = total ? Math.round(present / total * 100) : 0;
-  const weekend = isWeekend(S.curDate);
+  const c = communityCalc(), day = S.curDate, today = day === todayISO();
+  const any = c.work.length > 0, dash = v => any ? v : "—";
+  const closed = c.rows.length - c.work.length;
+  const note = c.future ? "Це майбутня дата — відвідування ще не внесено."
+    : !any ? (isWeekend(day) ? "Вихідний день — відвідування не рахується." : "У всіх закладах неробочий день.")
+    : [today ? "Цифри за сьогодні змінюються протягом дня, поки садочки позначають відсутніх." : "",
+       closed ? "Заклади з неробочим днем у підсумок і відсоток не входять." : "",
+       "Натисніть на заклад, щоб відкрити його сітку за місяць."].filter(Boolean).join(" ");
+  const at = S.loadedAt ? S.loadedAt.toLocaleTimeString("uk-UA", { hour:"2-digit", minute:"2-digit" }) : "";
   return `
   <div class="datebar">
     <button class="btn" onclick="shiftDay(-1)" aria-label="Попередній день">‹</button>
-    <input type="date" value="${S.curDate}" onchange="setDateReload(this.value)" aria-label="Дата">
+    <input type="date" value="${day}" onchange="setDateReload(this.value)" aria-label="Дата">
     <button class="btn" onclick="shiftDay(1)" aria-label="Наступний день">›</button>
     <button class="btn" onclick="setDateReload('${todayISO()}')">Сьогодні</button>
   </div>
-  <h2 class="title">${fmtLong(S.curDate)}</h2>
-  <p class="note">${weekend
-    ? "Вихідний день — відвідування не рахується."
-    : "Загальна картина по громаді. Натисніть на заклад, щоб відкрити його сітку за місяць."}</p>
+  <h2 class="title">${fmtLong(day)}</h2>
+  <p class="note">${note}${today && at ? ` Оновлено о ${at} · <button class="linkbtn" onclick="reload()">Оновити</button>` : ""}</p>
   <div class="summary">
-    <div class="sum"><b>${total}</b><span>дітей у громаді</span></div>
-    <div class="sum ok"><b>${present}</b><span>присутні</span></div>
-    <div class="sum no"><b>${total - present}</b><span>відсутні</span></div>
-    <div class="sum"><b>${avg}%</b><span>відвідування</span></div>
+    <div class="sum"><b>${c.kidsAll}</b><span>дітей у громаді</span></div>
+    <div class="sum ok"><b>${dash(c.present)}</b><span>присутні</span></div>
+    <div class="sum no"><b>${dash(c.absent)}</b><span>відсутні</span></div>
+    <div class="sum"><b>${dash(c.H)}</b><span>з них хворіють</span></div>
+    <div class="sum"><b>${pctText(any ? c.avg : null)}</b><span>відвідування</span></div>
   </div>
   <div class="scroll"><table>
     <thead><tr><th class="num">№</th><th class="name">Заклад</th>
-      <th>Дітей</th><th>Присутні</th><th>Відсутні</th><th>%</th></tr></thead>
-    <tbody>${rows.map((r,i) => {
-      const isW = r.is_work !== false;
-      const pct = r.kids ? Math.round(r.present / r.kids * 100) : null;
-      return `<tr class="clickable" onclick="openInst(${r.institution_id})">
+      <th>Дітей</th><th>Присутні</th><th>Відсутні</th>
+      <th title="Відсутній">н</th><th title="Хворіє">хв</th><th title="За кордоном">кор</th><th>%</th></tr></thead>
+    <tbody>${c.rows.map((r,i) => {
+      const p = c.pct(r);
+      return `<tr class="clickable" title="Відкрити сітку місяця" onclick="openInst(${r.institution_id})">
         <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td>
         <td>${r.kids}</td>
-        ${isW ? `<td>${r.present}</td><td>${r.kids - r.present}</td>
-          <td class="pct ${pct !== null && pct < 70 ? "low" : ""}">${pct === null ? "—" : pct + "%"}</td>`
-          : `<td colspan="3" class="muted">неробочий день</td>`}
+        ${c.isW(r) ? `<td>${r.present}</td><td>${r.kids - r.present}</td><td>${r.n}</td><td>${r.h}</td><td>${r.k}</td>
+          <td class="pct ${p !== null && p < 70 ? "low" : ""}">${pctText(p)}</td>`
+          : `<td colspan="6" class="muted">${c.future ? "—" : "неробочий день"}</td>`}
       </tr>`}).join("")}
       <tr class="total"><td class="num"></td><td class="name">Разом по громаді</td>
-        <td>${total}</td><td>${present}</td><td>${total - present}</td><td>${avg}%</td></tr>
-    </tbody></table></div>`;
+        <td>${c.kidsAll}</td><td>${dash(c.present)}</td><td>${dash(c.absent)}</td>
+        <td>${dash(c.N)}</td><td>${dash(c.H)}</td><td>${dash(c.K)}</td><td>${pctText(any ? c.avg : null)}</td></tr>
+    </tbody></table></div>
+  <p class="legend"><i class="N">н</i>відсутній &nbsp; <i class="H">хв</i>хворіє &nbsp; <i class="K">кор</i>за кордоном</p>
+  <button class="btn-main" style="margin-top:11px" onclick="exportCommunity()">Вивантажити в Excel</button>`;
 }
 function setDateReload(v){ if(!v) return; S.curDate = v; const d = new Date(v); S.vy = d.getFullYear(); S.vm = d.getMonth(); reload() }
 function openInst(id){
   S.instId = id; S.groupFilter = ""; S.sel = null; S.tab = "month";
   renderTabs(); window.scrollTo(0,0); reload();
 }
+/* Із «Звіту громади» — одразу у звіт закладу за той самий місяць */
+function openReport(id){
+  S.instId = id; S.groupFilter = ""; S.sel = null; S.tab = "report";
+  renderTabs(); window.scrollTo(0,0); reload();
+}
 
-/* Відсоток кожного закладу рахує база — за його власними робочими днями
-   і лише за ті дні, коли дитина була в списку. Середнє по громаді — зважене. */
+/* =====================================================================
+   Звіт громади. Цифри рахує база (community_period) за тими самими
+   правилами, що й «Звіт закладу»: робочі дні кожного закладу, що вже минули,
+   і лише дні, коли дитина була в списку. Середнє по громаді — зважене.
+   ===================================================================== */
 function summaryCalc(){
-  const rows = S.summary || [];
-  const oldDays = workDays(S.vy, S.vm).filter(d => d <= todayISO()).length;   // запас для старої версії функції
+  const rows = S.summary || [], sp = monthSpan(S.vy, S.vm);
+  const oldDays = workDays(S.vy, S.vm).filter(d => d <= sp.upto).length;   // запас для старої версії функції
   const abs = r => Number(r.n) + Number(r.h) + Number(r.k);
   const slots = r => r.slots != null ? Number(r.slots) : Number(r.kids) * oldDays;
-  const pct = r => slots(r) ? Math.round((slots(r) - abs(r)) / slots(r) * 100) : null;
+  const att = r => slots(r) - abs(r);                                       // відвідано дітоднів
+  const pct = r => slots(r) ? Math.round(att(r) / slots(r) * 100) : null;
   const S1 = rows.reduce((s,r) => s + slots(r), 0), A1 = rows.reduce((s,r) => s + abs(r), 0);
-  return { rows, abs, pct, avg: S1 ? Math.round((S1 - A1) / S1 * 100) : 0 };
+  const sum = f => rows.reduce((s,r) => s + Number(r[f] || 0), 0);
+  return { rows, sp, att, pct, sum, totalAtt: S1 - A1, missed: A1,
+           hasArr: rows.some(r => r.arrived != null),
+           avg: S1 ? Math.round((S1 - A1) / S1 * 100) : null };
 }
 function viewSummary(){
-  const { rows, pct, avg } = summaryCalc();
-  const sum = f => rows.reduce((s,r) => s + Number(r[f] || 0), 0);
+  const c = summaryCalc(), sp = c.sp, on = fmtShort(sp.ref), sum = c.sum;
+  const arr = r => r.arrived ?? "—";
   return `
   <div class="datebar">
     <button class="btn" onclick="shiftMonth(-1)" aria-label="Попередній місяць">‹</button>
     <div class="monthname">${monthName(S.vy,S.vm)}</div>
     <button class="btn" onclick="shiftMonth(1)" aria-label="Наступний місяць">›</button>
   </div>
-  <h2 class="title">Звіт по громаді</h2>
-  <p class="note">Відсоток кожного закладу рахується за його власними робочими днями, що вже минули.</p>
+  <h2 class="title">Звіт по громаді за ${monthName(S.vy,S.vm)}</h2>
+  <p class="note">${cap(spanNote(sp))}. Відсоток кожного закладу рахується за його власними робочими днями.
+     Натисніть на заклад, щоб відкрити його звіт.</p>
+  ${sp.future ? `<div class="card">Цей місяць ще не почався — відвідування з'явиться з першого робочого дня.</div>` : ""}
   <div class="summary">
-    <div class="sum"><b>${sum("kids")}</b><span>дітей</span></div>
-    <div class="sum ok"><b>${avg}%</b><span>середнє</span></div>
-    <div class="sum no"><b>${sum("n")+sum("h")+sum("k")}</b><span>пропусків</span></div>
+    <div class="sum"><b>${sum("kids")}</b><span>дітей на ${on}</span></div>
+    <div class="sum ok"><b>${pctText(c.avg)}</b><span>середнє відвідування</span></div>
+    <div class="sum"><b>${c.totalAtt}</b><span>відвідано дітоднів</span></div>
+    <div class="sum no"><b>${c.missed}</b><span>пропущено дітоднів</span></div>
   </div>
   <div class="scroll"><table>
-    <thead><tr><th class="num">№</th><th class="name">Заклад</th><th>Дітей</th><th>Роб. днів</th><th>%</th>
-      <th>н</th><th>хв</th><th>кор</th><th>Пільга 50%</th><th>Пільга 100%</th><th>Вибули</th></tr></thead>
-    <tbody>${rows.map((r,i) => { const p = pct(r); return `<tr>
-      <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td><td>${r.kids}</td>
-      <td>${r.work_days ?? "—"}</td>
-      <td class="pct ${p !== null && p < 70 ? "low" : ""}">${p === null ? "—" : p + "%"}</td>
-      <td>${r.n}</td><td>${r.h}</td><td>${r.k}</td><td>${r.ben50}</td><td>${r.ben100}</td><td>${r.gone}</td>
+    <thead><tr><th class="num">№</th><th class="name">Заклад</th>
+      <th title="Дітей у списку на ${on}">Дітей</th><th title="Зараховано за місяць">Прибули</th><th title="Вибули за місяць">Вибули</th>
+      <th title="Робочих днів закладу, що вже минули">Роб. днів</th><th title="Скільки днів діти фактично відвідали">Дітоднів</th><th>%</th>
+      <th title="Пропущено дітоднів: відсутній">н</th><th title="Пропущено дітоднів: хворів">хв</th><th title="Пропущено дітоднів: за кордоном">кор</th>
+      <th title="Дітей з пільгою на харчування на ${on}">Пільга 50%</th><th title="Дітей з пільгою на харчування на ${on}">Пільга 100%</th></tr></thead>
+    <tbody>${c.rows.map((r,i) => { const p = c.pct(r); return `<tr class="clickable" title="Відкрити звіт закладу" onclick="openReport(${r.institution_id})">
+      <td class="num">${i+1}</td><td class="name">${esc(r.name)}</td>
+      <td>${r.kids}</td><td>${arr(r)}</td><td>${r.gone}</td>
+      <td>${r.work_days ?? "—"}</td><td>${c.att(r)}</td>
+      <td class="pct ${p !== null && p < 70 ? "low" : ""}">${pctText(p)}</td>
+      <td>${r.n}</td><td>${r.h}</td><td>${r.k}</td><td>${r.ben50}</td><td>${r.ben100}</td>
     </tr>` }).join("")}
-      <tr class="total"><td class="num"></td><td class="name">Разом</td><td>${sum("kids")}</td><td></td><td>${avg}%</td>
-        <td>${sum("n")}</td><td>${sum("h")}</td><td>${sum("k")}</td>
-        <td>${sum("ben50")}</td><td>${sum("ben100")}</td><td>${sum("gone")}</td></tr>
+      <tr class="total"><td class="num"></td><td class="name">Разом</td>
+        <td>${sum("kids")}</td><td>${c.hasArr ? sum("arrived") : "—"}</td><td>${sum("gone")}</td><td></td>
+        <td>${c.totalAtt}</td><td>${pctText(c.avg)}</td>
+        <td>${sum("n")}</td><td>${sum("h")}</td><td>${sum("k")}</td><td>${sum("ben50")}</td><td>${sum("ben100")}</td></tr>
     </tbody></table></div>
+  <p class="legend">Дітей і пільги — у списку на ${on}. Дітодні — скільки днів діти фактично були в закладі;
+     н, хв, кор — скільки дітоднів пропущено з кожної причини. Прибули й вибули — за датами в картках дітей.</p>
   <button class="btn-main" style="margin-top:11px" onclick="exportSummary()">Вивантажити в Excel</button>`;
 }
 
@@ -1667,30 +1759,87 @@ function exportKids(){
     c.address, c.phone, c.edu_form, c.special_status, c.meal_benefit, c.enrolled_on, c.left_on]);
   download(`dity-${instName(S.instId)}.csv`, [head, ...rows]);
 }
-/* Сітка місяця: групи окремими блоками, як на екрані */
+/* Табель місяця: групи окремими блоками, як на екрані, і підсумки по кожній дитині.
+   Майбутні дні в підсумки не йдуть; «—» — дитину ще не зараховано. */
 function exportReport(){
-  const days = workDays(S.vy, S.vm);
+  const sp = monthSpan(S.vy, S.vm), days = workDays(S.vy, S.vm);
+  const past = d => d <= sp.upto;
   const groups = groupsOf(monthKids());
-  const presentRow = (kids, label) => ["", label, ...days.map(d => kids.filter(c => markOf(c,d)==="P").length), ""];
-  const out = [["№","Прізвище, ім'я, по батькові", ...days.map(d => new Date(d).getDate()), "Присутніх днів"]];
+  const cnt = (c, k) => days.filter(d => past(d) && markOf(c, d) === k).length;
+  const totals = kids => ["P","N","H","K"].map(k => kids.reduce((s, c) => s + cnt(c, k), 0));
+  const presentRow = (kids, label) => ["", label,
+    ...days.map(d => past(d) ? kids.filter(c => markOf(c, d) === "P").length : ""), ...totals(kids)];
+  const out = [
+    ["Табель відвідування", instName(S.instId), monthName(S.vy, S.vm), spanNote(sp)],
+    [],
+    ["№", "Прізвище, ім'я, по батькові", ...days.map(d => new Date(d).getDate()), "Відвідано днів", "н", "хв", "кор"]];
   groups.forEach(g => {
     out.push(["", groupTitle(g.name)]);
     g.kids.forEach((c,i) => out.push([i+1, c.full_name,
-      /* «—» — дитину ще не зараховано, щоб не сплутати з присутністю */
       ...days.map(d => { const m = markOf(c,d); return m==="P" ? "" : m==="X" ? "—" : MARK[m] }),
-      days.filter(d => markOf(c,d)==="P").length]));
+      cnt(c,"P"), cnt(c,"N"), cnt(c,"H"), cnt(c,"K")]));
     if(groups.length > 1) out.push(presentRow(g.kids, "Присутніх у групі"));
   });
   out.push(presentRow(groups.flatMap(g => g.kids), "Присутніх за день"));
-  download(`vidviduvannia-${instName(S.instId)}-${monthName(S.vy,S.vm)}.csv`, out);
+  download(`tabel-${instName(S.instId)}-${ymKey(S.vy, S.vm)}.csv`, out);
+}
+/* Цифри «Звіту закладу» — так само, як на екрані */
+function exportReportCard(){
+  const r = monthStats(), sp = r.sp, on = fmtShort(sp.ref);
+  const st = statusRows(r);
+  download(`zvit-${instName(S.instId)}-${ymKey(S.vy, S.vm)}.csv`, [
+    ["Звіт закладу", instName(S.instId)],
+    ["Місяць", monthName(S.vy, S.vm), spanNote(sp)],
+    [],
+    ["Діти"],
+    [`У списку на ${on}`, r.act],
+    ["Прибуло за місяць", r.arrived],
+    ["Вибуло за місяць", r.left],
+    [],
+    ["Відвідування"],
+    ["Робочих днів", r.days],
+    ["Відвідано дітоднів", r.present],
+    ["Середнє відвідування, %", r.pct ?? ""],
+    ["Пропущено дітоднів: відсутній (н)", r.N],
+    ["Пропущено дітоднів: хворів (хв)", r.H],
+    ["Пропущено дітоднів: за кордоном (кор)", r.K],
+    [],
+    [`Форма здобуття дошкільної освіти — на ${on}`],
+    ...FORMS.map(f => [f, r.byF[f] || 0]),
+    [],
+    [`Спеціальний статус — на ${on}`],
+    ...(st.length ? st : [["Дітей зі статусом немає", 0]]),
+    [],
+    [`Пільги на харчування — на ${on}`],
+    ["50%", r.b50],
+    ["100%", r.b100]
+  ]);
+}
+function exportCommunity(){
+  const c = communityCalc(), any = c.work.length > 0, v = x => any ? x : "";
+  download(`hromada-${S.curDate}.csv`, [
+    ["Відвідування закладів громади", fmtShort(S.curDate)],
+    [],
+    ["№", "Заклад", "Дітей", "Присутні", "Відсутні", "н", "хв", "кор", "% відвідування"],
+    ...c.rows.map((r,i) => c.isW(r)
+      ? [i+1, r.name, r.kids, r.present, r.kids - r.present, r.n, r.h, r.k, c.pct(r) ?? ""]
+      : [i+1, r.name, r.kids, c.future ? "" : "неробочий день", "", "", "", "", ""]),
+    ["", "Разом по громаді", c.kidsAll, v(c.present), v(c.absent), v(c.N), v(c.H), v(c.K), any ? c.avg ?? "" : ""]
+  ]);
 }
 function exportSummary(){
-  const { rows, pct } = summaryCalc();
-  const head = ["№","Заклад","Дітей","Робочих днів","% відвідування","н","хв","кор",
-    "Пільга 50%","Пільга 100%","Вибули за місяць"];
-  download(`zvit-gromady-${monthName(S.vy,S.vm)}.csv`,
-    [head, ...rows.map((r,i) => [i+1, r.name, r.kids, r.work_days ?? "", pct(r) ?? "",
-      r.n, r.h, r.k, r.ben50, r.ben100, r.gone])]);
+  const c = summaryCalc(), sp = c.sp, on = fmtShort(sp.ref), sum = c.sum;
+  download(`zvit-gromady-${ymKey(S.vy, S.vm)}.csv`, [
+    ["Звіт по громаді", monthName(S.vy, S.vm), spanNote(sp)],
+    [],
+    ["№", "Заклад", `Дітей (на ${on})`, "Прибули", "Вибули", "Робочих днів", "Відвідано дітоднів", "% відвідування",
+     "Пропущено дітоднів: н", "Пропущено дітоднів: хв", "Пропущено дітоднів: кор",
+     `Пільга 50% (на ${on})`, `Пільга 100% (на ${on})`],
+    ...c.rows.map((r,i) => [i+1, r.name, r.kids, r.arrived ?? "", r.gone, r.work_days ?? "", c.att(r), c.pct(r) ?? "",
+      r.n, r.h, r.k, r.ben50, r.ben100]),
+    ["", "Разом", sum("kids"), c.hasArr ? sum("arrived") : "", sum("gone"), "", c.totalAtt, c.avg ?? "",
+      sum("n"), sum("h"), sum("k"), sum("ben50"), sum("ben100")]
+  ]);
 }
 
 /* =====================================================================
