@@ -121,6 +121,7 @@ table.edit td.name input{font-weight:600}
 table.grid td{height:34px;max-width:0}
 table.grid td .cut{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 table.grid td.name,table.grid th.name{left:66px}
+table.grid.noact td.name,table.grid.noact th.name{left:32px}
 table.grid td.act,table.grid th.act{position:sticky;left:32px;width:34px;min-width:34px;background:var(--card);z-index:3;padding:0}
 table.grid th.act{z-index:6}
 table.grid td.act .mini{padding:4px 8px;font-size:12px;color:var(--brand);border-color:var(--brand-soft);background:var(--brand-soft)}
